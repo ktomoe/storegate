@@ -1,0 +1,75 @@
+"""ZarrDatabase module."""
+import zarr
+from storegate import const
+from storegate.database.database import Database
+
+class ZarrDatabase(Database):
+    """Base class of Zarr database."""
+    def __init__(self, output_dir, chunk=1000, mode='r'):
+
+        self._output_dir = output_dir
+        self._chunk = chunk
+        self._mode = mode
+        self._db = zarr.open(self._output_dir, mode=mode)
+
+
+    def initialize(self, data_id):
+        """Initialize the store for the given data_id.
+
+        In read-only mode ('r'), data_id must already exist in the store.
+        In writable modes, groups are created if they do not exist.
+        """
+        if self._mode == 'r':
+            return
+        db_data_id = self._db.require_group(data_id)
+        for phase in const.PHASES:
+            db_data_id.require_group(phase)
+
+
+    def add_data(self, data_id, var_name, data, phase):
+        db = self._db[data_id][phase]
+
+        if var_name in db.array_keys():
+            db[var_name].append(data)
+        else:
+            shape = data.shape
+            chunks = (self._chunk, ) + tuple(shape[1:])
+            db.create_array(name=var_name, data=data, chunks=chunks)
+
+
+    def update_data(self, data_id, var_name, data, phase, index):
+        if index is None:
+            index = slice(0, None)
+
+        self._db[data_id][phase][var_name][index] = data
+
+
+    def get_data(self, data_id, var_name, phase, index):
+        if index is None:
+            index = slice(0, None)
+
+        return self._db[data_id][phase][var_name][index]
+
+
+    def delete_data(self, data_id, var_name, phase):
+        if var_name not in self._db[data_id][phase].array_keys():
+            raise KeyError(f'"{var_name}" not found in {phase} phase.')
+        del self._db[data_id][phase][var_name]
+
+
+    def get_metadata(self, data_id, phase):
+        results = {}
+        if data_id not in self._db.group_keys():
+            return results
+
+        db = self._db[data_id][phase]
+
+        for var_name in db.array_keys():
+            arr = db[var_name]
+            results[var_name] = {
+                'backend': 'zarr',
+                'type': arr.dtype.name,
+                'shape': arr.shape[1:],
+                'total_events': arr.shape[0]
+            }
+        return results
