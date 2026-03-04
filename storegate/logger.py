@@ -8,9 +8,11 @@ Examples:
     >>> logger.add_file_handler('storegate.log')
     >>> logger.debug("This message is not printed at INFO level.")
 """
+from __future__ import annotations
 
 import logging
 import functools
+from typing import Any, Callable, TypeVar
 
 DEBUG = logging.DEBUG        # 10
 INFO = logging.INFO          # 20
@@ -30,8 +32,10 @@ _console_handler.setLevel(logging.DEBUG)
 _console_handler.setFormatter(_fmt)
 _logger.addHandler(_console_handler)
 
+_F = TypeVar('_F', bound=Callable[..., Any])
 
-def set_level(level):
+
+def set_level(level: int | str) -> None:
     """Set log level.
 
     Args:
@@ -42,7 +46,7 @@ def set_level(level):
     _logger.setLevel(level)
 
 
-def add_file_handler(filename, level=DEBUG):
+def add_file_handler(filename: str, level: int = DEBUG) -> None:
     """Add a file handler.
 
     Args:
@@ -55,27 +59,27 @@ def add_file_handler(filename, level=DEBUG):
     _logger.addHandler(fh)
 
 
-def debug(msg, *args):
+def debug(msg: str, *args: Any) -> None:
     """Show debug [D] message."""
     _logger.debug(msg, *args)
 
 
-def info(msg, *args):
+def info(msg: str, *args: Any) -> None:
     """Show information [I] message."""
     _logger.info(msg, *args)
 
 
-def warn(msg, *args):
+def warn(msg: str, *args: Any) -> None:
     """Show warning [W] message."""
     _logger.warning(msg, *args)
 
 
-def error(msg, *args):
+def error(msg: str, *args: Any) -> None:
     """Show error [E] message."""
     _logger.error(msg, *args)
 
 
-def counter(count, max_counts, divide=1, message=None):
+def counter(count: int, max_counts: int, divide: int = 1, message: str | None = None) -> None:
     """Show process counter as information.
 
     >>> '({count}/{max_counts}) events processed (message)'
@@ -90,7 +94,7 @@ def counter(count, max_counts, divide=1, message=None):
             info(f'({count}/{max_counts}) events processed ({message})')
 
 
-def header1(message, level=None):
+def header1(message: str, level: Callable[[str], None] | None = None) -> None:
     """Show the following header.
 
     >>> '================================='
@@ -111,7 +115,7 @@ def header1(message, level=None):
     level("=" * len1)
 
 
-def header2(message, level=None):
+def header2(message: str, level: Callable[[str], None] | None = None) -> None:
     """Show the following header.
 
     >>> '------------ message ------------'
@@ -128,7 +132,7 @@ def header2(message, level=None):
         level(("-" * len2) + ' ' + message + ' ' + ("-" * len2))
 
 
-def header3(message, level=None):
+def header3(message: str, level: Callable[[str], None] | None = None) -> None:
     """Show the following header.
 
     >>> ============ message ============
@@ -145,7 +149,13 @@ def header3(message, level=None):
         level(("=" * len2) + ' ' + message + ' ' + ("=" * len2))
 
 
-def table(names, data, header=None, footer=None, max_length=30):
+def table(
+    names: list[str],
+    data: list[list[str] | str],
+    header: str | None = None,
+    footer: str | None = None,
+    max_length: int = 30,
+) -> None:
     """Show table. All data must be str.
 
     >>> names = ['var0', 'var1']
@@ -175,7 +185,7 @@ def table(names, data, header=None, footer=None, max_length=30):
     for idata in data:
         if idata == '-':
             continue
-        for index, var in enumerate(idata):
+        for index, var in enumerate(idata):  # type: ignore[arg-type]
             if len(var) > lengths[index]:
                 lengths[index] = len(var)
 
@@ -205,7 +215,7 @@ def table(names, data, header=None, footer=None, max_length=30):
             continue
 
         message = ''
-        for index, var in enumerate(idata):
+        for index, var in enumerate(idata):  # type: ignore[arg-type]
             var = var.ljust(lengths[index])
             message += f'{var[:max_length]}  '
         info(message)
@@ -217,7 +227,7 @@ def table(names, data, header=None, footer=None, max_length=30):
         info('=' * total_length)
 
 
-def log_call(func):
+def log_call(func: _F) -> _F:
     """Show the header and footer indicating start and end algorithm.
 
     Examples:
@@ -228,7 +238,7 @@ def log_call(func):
         >>>     pass
     """
     @functools.wraps(func)
-    def wrapper(obj, *args, **kwargs):
+    def wrapper(obj: Any, *args: Any, **kwargs: Any) -> Any:
         header2(f'{obj.__class__.__name__} {func.__qualname__} START', debug)
         debug(f'args={args} kwargs={kwargs}')
         rtn = func(obj, *args, **kwargs)
@@ -236,4 +246,4 @@ def log_call(func):
         header2(f'{obj.__class__.__name__} {func.__qualname__} END', debug)
         return rtn
 
-    return wrapper
+    return wrapper  # type: ignore[return-value]

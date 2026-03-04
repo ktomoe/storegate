@@ -1,10 +1,15 @@
+from __future__ import annotations
+
 import copy
 import inspect
+from typing import Any
+
 import torch
 
 from storegate import logger
 
-def build_module(obj, obj_args, modules):
+
+def build_module(obj: Any, obj_args: dict[str, Any], modules: Any) -> Any:
     # str object
     if isinstance(obj, str):
         return getattr(modules, obj)(**obj_args)
@@ -20,12 +25,12 @@ def build_module(obj, obj_args, modules):
         return copy.copy(obj)
 
 
-def inputs_size(inputs):
+def inputs_size(inputs: torch.Tensor | list[Any] | Any) -> int:
     if isinstance(inputs, (list, tuple)):
         inputs = inputs[0]
 
     if isinstance(inputs, torch.Tensor):
-        result = inputs.size(0)
+        result: int = inputs.size(0)
     elif getattr(inputs, 'batch_size', None) is not None:
         result = inputs.batch_size
     else:

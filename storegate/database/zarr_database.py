@@ -1,19 +1,24 @@
 """ZarrDatabase module."""
+from __future__ import annotations
+
+from typing import Any
+
+import numpy as np
 import zarr
+
 from storegate import const
 from storegate.database.database import Database
 
+
 class ZarrDatabase(Database):
     """Base class of Zarr database."""
-    def __init__(self, output_dir, chunk=1000, mode='r'):
-
+    def __init__(self, output_dir: str, chunk: int = 1000, mode: str = 'r') -> None:
         self._output_dir = output_dir
         self._chunk = chunk
         self._mode = mode
-        self._db = zarr.open(self._output_dir, mode=mode)
+        self._db: Any = zarr.open(self._output_dir, mode=mode)
 
-
-    def initialize(self, data_id):
+    def initialize(self, data_id: str) -> None:
         """Initialize the store for the given data_id.
 
         In read-only mode ('r'), data_id must already exist in the store.
@@ -25,8 +30,7 @@ class ZarrDatabase(Database):
         for phase in const.PHASES:
             db_data_id.require_group(phase)
 
-
-    def add_data(self, data_id, var_name, data, phase):
+    def add_data(self, data_id: str, var_name: str, data: np.ndarray, phase: str) -> None:
         db = self._db[data_id][phase]
 
         if var_name in db.array_keys():
@@ -36,29 +40,25 @@ class ZarrDatabase(Database):
             chunks = (self._chunk, ) + tuple(shape[1:])
             db.create_array(name=var_name, data=data, chunks=chunks)
 
-
-    def update_data(self, data_id, var_name, data, phase, index):
+    def update_data(self, data_id: str, var_name: str, data: np.ndarray, phase: str, index: int | slice | None) -> None:
         if index is None:
             index = slice(0, None)
 
         self._db[data_id][phase][var_name][index] = data
 
-
-    def get_data(self, data_id, var_name, phase, index):
+    def get_data(self, data_id: str, var_name: str, phase: str, index: int | slice | None) -> np.ndarray:
         if index is None:
             index = slice(0, None)
 
-        return self._db[data_id][phase][var_name][index]
+        return self._db[data_id][phase][var_name][index]  # type: ignore[no-any-return]
 
-
-    def delete_data(self, data_id, var_name, phase):
+    def delete_data(self, data_id: str, var_name: str, phase: str) -> None:
         if var_name not in self._db[data_id][phase].array_keys():
             raise KeyError(f'"{var_name}" not found in {phase} phase.')
         del self._db[data_id][phase][var_name]
 
-
-    def get_metadata(self, data_id, phase):
-        results = {}
+    def get_metadata(self, data_id: str, phase: str) -> dict[str, Any]:
+        results: dict[str, Any] = {}
         if data_id not in self._db.group_keys():
             return results
 

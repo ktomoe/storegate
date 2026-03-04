@@ -1,21 +1,26 @@
+from __future__ import annotations
+
 import copy
 import time
 import json
 import multiprocessing as mp
+from typing import Any
 from tqdm import tqdm
 from itertools import product
 
 from storegate import logger
 from storegate.agent import Agent
 
+
 class SearchAgent(Agent):
     """Search agent class of agent."""
-    def __init__(self, task=None,
-                       hps=None,
-                       num_trials=None,
-                       cuda_ids=None,
-                       disable_tqdm=True,
-                       json_dump=None):
+    def __init__(self,
+                 task: Any = None,
+                 hps: dict[str, list[Any]] | None = None,
+                 num_trials: int | None = None,
+                 cuda_ids: list[int] | None = None,
+                 disable_tqdm: bool = True,
+                 json_dump: str | None = None) -> None:
         """Initialize search agent.
 
         Args:
@@ -35,17 +40,17 @@ class SearchAgent(Agent):
             )
 
         self._task = task
-        self._hps = self.all_combinations(hps)
+        self._hps: list[dict[str, Any]] = self.all_combinations(hps)
         self._num_trials = num_trials
         self._cuda_ids = cuda_ids
         self._disable_tqdm = disable_tqdm
         self._json_dump = json_dump
 
         self._context = 'spawn'
-        self._history = []
+        self._history: list[dict[str, Any]] = []
 
 
-    def all_combinations(self, hps):
+    def all_combinations(self, hps: dict[str, list[Any]] | None) -> list[dict[str, Any]]:
         if hps is None:
             return [{}]
 
@@ -54,10 +59,10 @@ class SearchAgent(Agent):
 
         return [dict(zip(keys, value)) for value in product(*values)]
 
-    def execute(self):
+    def execute(self) -> None:
         ctx = mp.get_context(self._context)
-        queue = ctx.Queue()
-        args = []
+        queue: mp.Queue[dict[str, Any]] = ctx.Queue()
+        args: list[list[Any]] = []
 
         for job_id, hps in enumerate(self._hps):
             if self._num_trials is None:
@@ -69,18 +74,18 @@ class SearchAgent(Agent):
         self.execute_pool_jobs(ctx, queue, args)
 
 
-    def finalize(self):
+    def finalize(self) -> None:
         self._history.sort(key=lambda r: (r['job_id'], r.get('trial_id') or 0))
         if self._json_dump:
             with open(self._json_dump, 'w', encoding="utf-8") as f:
                 json.dump(self._history, f, ensure_ascii=False, indent=2)
 
 
-    def execute_pool_jobs(self, ctx, queue, args):
+    def execute_pool_jobs(self, ctx: Any, queue: Any, args: list[list[Any]]) -> None:
         """(expert method) Execute multiprocessing pool jobs."""
         jobs = copy.deepcopy(args)
 
-        pool = [0] * len(self._cuda_ids)
+        pool: list[Any] = [0] * len(self._cuda_ids)
         num_jobs = len(jobs)
         all_done = False
 
@@ -120,16 +125,30 @@ class SearchAgent(Agent):
             self._history.append(queue.get())
 
 
-    def execute_wrapper(self, queue, task, hps, job_id, trial_id, cuda_id):
+    def execute_wrapper(
+        self,
+        queue: Any,
+        task: Any,
+        hps: dict[str, Any],
+        job_id: int,
+        trial_id: int | None,
+        cuda_id: int,
+    ) -> None:
         """(expert method) Wrapper method to execute multiprocessing pipeline."""
         hps['cuda_id'] = cuda_id
         result = self.execute_task(task, hps, job_id, trial_id)
         queue.put(result)
 
 
-    def execute_task(self, task, hps, job_id, trial_id=None):
+    def execute_task(
+        self,
+        task: Any,
+        hps: dict[str, Any],
+        job_id: int,
+        trial_id: int | None = None,
+    ) -> dict[str, Any]:
         """Execute pipeline."""
-        result = {
+        result: dict[str, Any] = {
             'hps': hps,
             'job_id': job_id,
             'trial_id': trial_id,

@@ -18,12 +18,15 @@ Examples:
     >>> if phase in const.PHASES:
     ...     pass
 """
+from __future__ import annotations
 
-TRAIN = 'train'
-VALID = 'valid'
-TEST = 'test'
-PHASES = (TRAIN, VALID, TEST)
-INVALID = -9999
+from typing import Any, Final
 
-PBAR_FORMAT = '{desc}: {percentage:3.0f}%| {n_fmt: >4}/{total_fmt: >4} [{rate_fmt: >16}{postfix}]'
-PBAR_ARGS = dict(unit=' batch', ncols=150, bar_format=PBAR_FORMAT)
+TRAIN: Final[str] = 'train'
+VALID: Final[str] = 'valid'
+TEST: Final[str] = 'test'
+PHASES: Final[tuple[str, ...]] = (TRAIN, VALID, TEST)
+INVALID: Final[int] = -9999
+
+PBAR_FORMAT: Final[str] = '{desc}: {percentage:3.0f}%| {n_fmt: >4}/{total_fmt: >4} [{rate_fmt: >16}{postfix}]'
+PBAR_ARGS: Final[dict[str, Any]] = dict(unit=' batch', ncols=150, bar_format=PBAR_FORMAT)

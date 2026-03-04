@@ -1,28 +1,27 @@
-import numpy as np
+from __future__ import annotations
+
+from typing import Any, Callable, TYPE_CHECKING
 
 import torch
-from torch import Tensor
+
+if TYPE_CHECKING:
+    from storegate.task.dl_env import DLEnv
 
 
-def dummy(*args, **kwargs):
+def dummy(*args: Any, **kwargs: Any) -> None:
     return None
 
 
 class EpochMetric:
     """Utility class to manage epoch metrics."""
-    def __init__(self, metrics, enable, ml):
+    def __init__(self, metrics: list[str | Callable[..., Any]], ml: DLEnv) -> None:
         self.metrics = metrics
-        self.enable = enable
         self.ml = ml
-        self.total = 0
-        self.buffs = []
-        self.preds = []
+        self.total: int = 0
+        self.buffs: list[Any] = []
 
-    def __call__(self, batch_result):
-        result = {}
-        if not self.enable:
-            return result
-
+    def __call__(self, batch_result: dict[str, Any]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
         batch_size = batch_result['batch_size']
         self.total += batch_size
 
@@ -55,15 +54,15 @@ class EpochMetric:
         return result
 
     # metrics
-    def loss(self, batch_result):
-        return batch_result['loss']['loss'].detach().item()
+    def loss(self, batch_result: dict[str, Any]) -> float:
+        return batch_result['loss']['loss'].detach().item()  # type: ignore[no-any-return]
 
-    def acc(self, batch_result):
+    def acc(self, batch_result: dict[str, Any]) -> float | list[float]:
         outputs = batch_result['outputs']
         labels = batch_result['labels']
 
         if isinstance(outputs, list):
-            result = []
+            result: list[float] = []
             for output, label in zip(outputs, labels):
                 _, preds = torch.max(output, 1)
                 corrects = torch.sum(preds == label.data)
@@ -74,12 +73,12 @@ class EpochMetric:
             result = corrects.detach().item() / len(labels)
         return result
 
-    def lr(self, batch_result):
+    def lr(self, batch_result: dict[str, Any]) -> list[float]:
         return [p['lr'] for p in self.ml.optimizer.param_groups]
 
 
-def get_pbar_metric(epoch_result):
-    result = {}
+def get_pbar_metric(epoch_result: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
     for key, value in epoch_result.items():
 
         if isinstance(value, list):

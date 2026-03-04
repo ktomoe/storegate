@@ -1,12 +1,17 @@
 """StoreGate module."""
+from __future__ import annotations
 
 import functools
 from contextlib import contextmanager
+from types import TracebackType
+from typing import Any, Callable, Generator, Iterator, TypeVar
 
 import numpy as np
 
 from storegate import logger, const
 from storegate.database import HybridDatabase
+
+_F = TypeVar('_F', bound=Callable[..., Any])
 
 
 class _PhaseAccessor:
@@ -15,42 +20,42 @@ class _PhaseAccessor:
     Holds phase context without mutating the parent StoreGate instance.
     """
 
-    def __init__(self, storegate, phase):
+    def __init__(self, storegate: StoreGate, phase: str) -> None:
         self._storegate = storegate
         self._phase = phase
 
-    def __getitem__(self, item):
+    def __getitem__(self, item: str) -> _VarAccessor:
         if isinstance(item, str):
             return _VarAccessor(self._storegate, self._phase, item)
         raise NotImplementedError(f'item {item} is not supported')
 
-    def __setitem__(self, item, data):
+    def __setitem__(self, item: str, data: Any) -> None:
         if not isinstance(item, str):
             raise ValueError(f'item {item} must be str')
         self._storegate.add_data(item, data, phase=self._phase)
 
-    def __delitem__(self, item):
+    def __delitem__(self, item: str) -> None:
         if not isinstance(item, str):
             raise ValueError(f'item {item} must be str')
         self._storegate.delete_data(item, phase=self._phase)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[str]:
         return iter(self._storegate.get_var_names(self._phase))
 
-    def items(self):
+    def items(self) -> Iterator[tuple[str, np.ndarray]]:
         """Yield (var_name, data) pairs for all variables in this phase."""
         for var_name in self:
             yield var_name, self._storegate.get_data(var_name, self._phase, index=None)
 
-    def __contains__(self, item):
+    def __contains__(self, item: object) -> bool:
         return item in self._storegate.get_var_names(self._phase)
 
-    def __len__(self):
+    def __len__(self) -> int:
         data_id = self._storegate._data_id
         backend = self._storegate.get_backend()
         if not self._storegate._metadata[data_id]['compiled'][backend]:
             raise ValueError('len() is supported only after compile')
-        return self._storegate._metadata[data_id]['sizes'][backend][self._phase]
+        return self._storegate._metadata[data_id]['sizes'][backend][self._phase]  # type: ignore[return-value]
 
 
 class _VarAccessor:
@@ -59,24 +64,24 @@ class _VarAccessor:
     Holds phase and var_name context without mutating the parent StoreGate instance.
     """
 
-    def __init__(self, storegate, phase, var_name):
+    def __init__(self, storegate: StoreGate, phase: str, var_name: str) -> None:
         self._storegate = storegate
         self._phase = phase
         self._var_name = var_name
 
-    def _normalize_index(self, item):
+    def _normalize_index(self, item: int | slice) -> int | slice | None:
         if self._phase == 'all' and item == slice(None, None, None):
             return None
         return item
 
-    def __getitem__(self, item):
+    def __getitem__(self, item: int | slice) -> np.ndarray:
         if not isinstance(item, (int, slice)):
             raise NotImplementedError(f'item {item} is not supported')
         return self._storegate.get_data(
             var_name=self._var_name, phase=self._phase, index=self._normalize_index(item)
         )
 
-    def __setitem__(self, item, data):
+    def __setitem__(self, item: int | slice, data: Any) -> None:
         if not isinstance(item, (int, slice)):
             raise ValueError(f'item {item} must be int or slice')
         self._storegate.update_data(
@@ -84,19 +89,19 @@ class _VarAccessor:
         )
 
 
-def require_data_id(method):
+def require_data_id(method: _F) -> _F:
     """Raise RuntimeError if self._data_id is not set."""
     @functools.wraps(method)
-    def wrapper(self, *args, **kwargs):
+    def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
         if self._data_id is None:
             raise RuntimeError(
                 f'{method.__name__}() requires data_id to be set. Call set_data_id() first.'
             )
         return method(self, *args, **kwargs)
-    return wrapper
+    return wrapper  # type: ignore[return-value]
 
 
-def _validate_phase(phase, allow_all=False):
+def _validate_phase(phase: str, allow_all: bool = False) -> None:
     """Raise ValueError if phase is not a valid phase name."""
     valid = const.PHASES + ('all',) if allow_all else const.PHASES
     if phase not in valid:
@@ -106,32 +111,37 @@ def _validate_phase(phase, allow_all=False):
 class StoreGate:
     """Data management class."""
 
-    def __init__(self, output_dir, mode='r', chunk=1000, data_id=None):
+    def __init__(self, output_dir: str, mode: str = 'r', chunk: int = 1000, data_id: str | None = None) -> None:
         """Initialize the storegate and the zarr architecture."""
 
-        self._db = HybridDatabase(output_dir=output_dir, mode=mode, chunk=chunk)
-        self._data_id = None
-        self._metadata = {}
+        self._db: HybridDatabase = HybridDatabase(output_dir=output_dir, mode=mode, chunk=chunk)
+        self._data_id: str | None = None
+        self._metadata: dict[str, Any] = {}
 
         if data_id is not None:
             self.set_data_id(data_id)
 
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         if self._data_id is None:
             return 'StoreGate(data_id=None)'
         backend = self.get_backend()
         compiled = self._metadata[self._data_id]['compiled'][backend]
         return f'StoreGate(data_id={self._data_id!r}, backend={backend!r}, compiled={compiled})'
 
-    def __enter__(self):
+    def __enter__(self) -> StoreGate:
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool:
         return False
 
     @require_data_id
-    def __getitem__(self, item):
+    def __getitem__(self, item: str) -> _PhaseAccessor:
         """Return a phase accessor for chained access: sg[phase][var_name][index]."""
         if (item in const.PHASES) or (item == 'all'):
             return _PhaseAccessor(self, item)
@@ -143,11 +153,11 @@ class StoreGate:
     # Public user APIs
     ##########################################################################
     @property
-    def data_id(self):
+    def data_id(self) -> str | None:
         """Return the current data_id."""
         return self._data_id
 
-    def set_data_id(self, data_id):
+    def set_data_id(self, data_id: str) -> None:
         """Set the default ``data_id`` and initialize the zarr."""
         self._data_id = data_id
         self._db.initialize(data_id)
@@ -158,7 +168,7 @@ class StoreGate:
 
 
     @require_data_id
-    def set_backend(self, backend):
+    def set_backend(self, backend: str) -> None:
         """Set backend mode of hybrid architecture."""
         if backend not in ['numpy', 'zarr']:
             raise ValueError(f'Unsupported backend: "{backend}". Use "numpy" or "zarr".')
@@ -167,12 +177,12 @@ class StoreGate:
 
 
     @require_data_id
-    def get_backend(self):
+    def get_backend(self) -> str:
         return self._db.get_backend()
 
     @require_data_id
     @contextmanager
-    def using_backend(self, backend):
+    def using_backend(self, backend: str) -> Generator[StoreGate, None, None]:
         """Context manager that temporarily switches to ``backend``, restoring the original on exit."""
         if backend not in ['numpy', 'zarr']:
             raise ValueError(f'Unsupported backend: "{backend}". Use "numpy" or "zarr".')
@@ -185,7 +195,7 @@ class StoreGate:
 
 
     @require_data_id
-    def add_data(self, var_name, data, phase):
+    def add_data(self, var_name: str, data: Any, phase: str) -> None:
         _validate_phase(phase)
         data = np.asarray(data)
         self._db.add_data(self._data_id, var_name, data, phase)
@@ -193,7 +203,7 @@ class StoreGate:
 
 
     @require_data_id
-    def add_data_splits(self, var_name, *, train=None, valid=None, test=None):
+    def add_data_splits(self, var_name: str, *, train: Any = None, valid: Any = None, test: Any = None) -> None:
         """Add data for multiple phases in a single call.
 
         Each phase argument is optional; omitted phases are skipped.
@@ -213,7 +223,7 @@ class StoreGate:
 
 
     @require_data_id
-    def update_data(self, var_name, data, phase, index=None):
+    def update_data(self, var_name: str, data: Any, phase: str, index: int | slice | None = None) -> None:
         """Update data in storegate with given options."""
         _validate_phase(phase)
         self._db.update_data(self._data_id, var_name, data, phase, index)
@@ -221,14 +231,14 @@ class StoreGate:
 
 
     @require_data_id
-    def get_data(self, var_name, phase, index=None):
+    def get_data(self, var_name: str, phase: str, index: int | slice | None = None) -> np.ndarray:
         """Retrieve data from storegate with given options."""
         _validate_phase(phase)
         return self._db.get_data(self._data_id, var_name, phase, index)
 
 
     @require_data_id
-    def delete_data(self, var_name, phase):
+    def delete_data(self, var_name: str, phase: str) -> None:
         """Delete data associated with var_names."""
         _validate_phase(phase, allow_all=True)
         if phase == 'all':
@@ -241,7 +251,7 @@ class StoreGate:
 
 
     @require_data_id
-    def get_var_names(self, phase):
+    def get_var_names(self, phase: str) -> list[str]:
         """Returns registered var_names for given phase."""
         _validate_phase(phase)
         metadata = self._db.get_metadata(self._data_id, phase)
@@ -249,7 +259,7 @@ class StoreGate:
 
 
     @require_data_id
-    def copy_to_memory(self, var_name, phase, output_var_name=None):
+    def copy_to_memory(self, var_name: str, phase: str, output_var_name: str | None = None) -> None:
         """Copy data from storage to memory."""
         _validate_phase(phase)
         if output_var_name is None:
@@ -267,7 +277,7 @@ class StoreGate:
 
 
     @require_data_id
-    def copy_to_storage(self, var_name, phase, output_var_name=None):
+    def copy_to_storage(self, var_name: str, phase: str, output_var_name: str | None = None) -> None:
         """Copy data from memory to storage."""
         _validate_phase(phase)
         if output_var_name is None:
@@ -285,7 +295,7 @@ class StoreGate:
 
 
     @require_data_id
-    def compile(self, show_info=False):
+    def compile(self, show_info: bool = False) -> None:
         """Check if registered data are valid.
 
         Validates that all variables within each phase have the same number of events.
@@ -293,11 +303,11 @@ class StoreGate:
         as each phase may have a different number of events by design.
         """
 
-        num_events = []
+        num_events: list[int | None] = []
         for phase in const.PHASES:
             metadata = self._db.get_metadata(self._data_id, phase)
 
-            phase_events = []
+            phase_events: list[int] = []
             for data in metadata.values():
                 phase_events.append(data['total_events'])
 
@@ -324,14 +334,14 @@ class StoreGate:
 
 
     @require_data_id
-    def show_info(self):
+    def show_info(self) -> None:
         """Show information currently registered in storegate."""
         is_compiled = self._metadata[self._data_id]['compiled'][self.get_backend()]
         header = f'StoreGate data_id : {self._data_id}, compiled : {is_compiled}'
 
         names = ['phase', 'backend', 'var_name', 'var_type', 'total_events', 'var_shape']
 
-        table_data = []
+        table_data: list[list[str] | str] = []
         for phase in const.PHASES:
             metadata = self._db.get_metadata(self._data_id, phase)
             if not metadata:

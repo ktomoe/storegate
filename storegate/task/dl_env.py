@@ -1,12 +1,15 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
 class DLEnv:
     """Data class to store compiled DL objects."""
-    model:     object = None
-    optimizer: object = None
-    loss:      object = None
+    model:     Any = None
+    optimizer: Any = None
+    loss:      Any = None
 
-    def clear(self):
+    def clear(self) -> None:
         self.model = self.optimizer = self.loss = None

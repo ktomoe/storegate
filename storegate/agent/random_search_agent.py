@@ -1,6 +1,8 @@
 """RandomSearchAgent module."""
+from __future__ import annotations
 
 import random
+from typing import Any
 
 from storegate.agent.search_agent import SearchAgent
 
@@ -29,12 +31,12 @@ class RandomSearchAgent(SearchAgent):
         >>> agent.finalize()
     """
 
-    def __init__(self, num_iter, seed=None, **kwargs):
+    def __init__(self, num_iter: int, seed: int | None = None, **kwargs: Any) -> None:
         self._num_iter = num_iter
         self._seed = seed
         super().__init__(**kwargs)
 
-    def all_combinations(self, hps):
+    def all_combinations(self, hps: dict[str, list[Any]] | None) -> list[dict[str, Any]]:
         """Randomly sample ``num_iter`` combinations from the search space."""
         if hps is None:
             return [{}]

@@ -1,35 +1,39 @@
 """Module to define Database abstraction."""
+from __future__ import annotations
 
 from abc import ABCMeta, abstractmethod
+from typing import Any
+
+import numpy as np
 
 
 class Database(metaclass=ABCMeta):
     """Base class of Database."""
     @abstractmethod
-    def initialize(self, data_id):
+    def initialize(self, data_id: str) -> None:
         """Initialize database, and set data_id."""
 
     @abstractmethod
-    def add_data(self, data_id, var_name, data, phase):
+    def add_data(self, data_id: str, var_name: str, data: np.ndarray, phase: str) -> None:
         """Add data to database for given data_id, var_name and phase.
 
         If var_name already exists, data need to be appended
         """
 
     @abstractmethod
-    def update_data(self, data_id, var_name, data, phase, index):
+    def update_data(self, data_id: str, var_name: str, data: np.ndarray, phase: str, index: int | slice | None) -> None:
         """Update (replace) data in database for given data_id, var_name, phase and index."""
 
     @abstractmethod
-    def get_data(self, data_id, var_name, phase, index):
+    def get_data(self, data_id: str, var_name: str, phase: str, index: int | slice | None) -> np.ndarray:
         """Get data for given data_id, var_name, phase and index from database."""
 
     @abstractmethod
-    def delete_data(self, data_id, var_name, phase):
+    def delete_data(self, data_id: str, var_name: str, phase: str) -> None:
         """Delete data for given data_id, var_name and phase from database."""
 
     @abstractmethod
-    def get_metadata(self, data_id, phase):
+    def get_metadata(self, data_id: str, phase: str) -> dict[str, Any]:
         """Returns a dictionary of metadata for a given data_id and phase.
 
         The dict contains: {'var_name': {'type': type of variable,
