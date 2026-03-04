@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
 class AgentTask(Task):
     """Agent task class for the default functions."""
-    _PROTECTED_KEYS: frozenset[str] = frozenset()
+    _PROTECTED_KEYS: frozenset[str] = frozenset({'storegate', 'cuda_id', 'ml'})
 
     def __init__(self, storegate: StoreGate) -> None:
         self._storegate = storegate

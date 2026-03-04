@@ -189,7 +189,7 @@ class PytorchTask(DLTask):
 
     def step_batch(self, data: Any, phase: str) -> dict[str, Any]:
         """Process batch data and update weights."""
-        inputs, labels = data  # FIXME: data without labels
+        inputs, labels = data
         inputs = self.add_device(inputs, self._device)
         labels = self.add_device(labels, self._device)
 
