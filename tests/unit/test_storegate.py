@@ -1,0 +1,428 @@
+"""Unit tests for StoreGate class."""
+import numpy as np
+import pytest
+
+from storegate import StoreGate
+from storegate.storegate import _PhaseAccessor, _VarAccessor
+
+
+DATA_ID = 'test_data'
+
+
+@pytest.fixture
+def sg(tmp_path):
+    return StoreGate(output_dir=str(tmp_path), mode='w')
+
+
+@pytest.fixture
+def sg_id(tmp_path):
+    store = StoreGate(output_dir=str(tmp_path), mode='w')
+    store.set_data_id(DATA_ID)
+    return store
+
+
+# ---------------------------------------------------------------------------
+# Initialization
+# ---------------------------------------------------------------------------
+
+def test_init_data_id_is_none(sg):
+    assert sg.data_id is None
+
+
+def test_init_with_data_id(tmp_path):
+    sg = StoreGate(output_dir=str(tmp_path), mode='w', data_id=DATA_ID)
+    assert sg.data_id == DATA_ID
+
+
+def test_set_data_id(sg):
+    sg.set_data_id(DATA_ID)
+    assert sg.data_id == DATA_ID
+
+
+def test_set_data_id_initializes_metadata(sg):
+    sg.set_data_id(DATA_ID)
+    assert DATA_ID in sg._metadata
+    assert 'compiled' in sg._metadata[DATA_ID]
+    assert 'sizes' in sg._metadata[DATA_ID]
+
+
+def test_set_data_id_twice_does_not_reset_metadata(sg):
+    sg.set_data_id(DATA_ID)
+    sg.add_data('x', np.array([[1.0]]), phase='train')
+    sg.set_data_id(DATA_ID)  # second call
+    # metadata should still exist
+    assert DATA_ID in sg._metadata
+
+
+def test_repr_no_data_id(sg):
+    assert 'None' in repr(sg)
+
+
+def test_repr_with_data_id(sg_id):
+    r = repr(sg_id)
+    assert DATA_ID in r
+
+
+def test_context_manager(tmp_path):
+    with StoreGate(output_dir=str(tmp_path), mode='w') as sg:
+        sg.set_data_id(DATA_ID)
+        sg.add_data('x', np.array([[1.0]]), phase='train')
+    # __exit__ returns False (does not suppress exceptions)
+
+
+# ---------------------------------------------------------------------------
+# require_data_id decorator
+# ---------------------------------------------------------------------------
+
+def test_add_data_requires_data_id(sg):
+    with pytest.raises(RuntimeError, match='set_data_id'):
+        sg.add_data('x', np.array([[1.0]]), phase='train')
+
+
+def test_get_data_requires_data_id(sg):
+    with pytest.raises(RuntimeError):
+        sg.get_data('x', 'train')
+
+
+def test_compile_requires_data_id(sg):
+    with pytest.raises(RuntimeError):
+        sg.compile()
+
+
+# ---------------------------------------------------------------------------
+# Backend management
+# ---------------------------------------------------------------------------
+
+def test_default_backend_is_zarr(sg_id):
+    assert sg_id.get_backend() == 'zarr'
+
+
+def test_set_backend_numpy(sg_id):
+    sg_id.set_backend('numpy')
+    assert sg_id.get_backend() == 'numpy'
+
+
+def test_set_backend_invalid_raises(sg_id):
+    with pytest.raises(ValueError, match='Unsupported backend'):
+        sg_id.set_backend('invalid')
+
+
+def test_using_backend_switches_and_restores(sg_id):
+    assert sg_id.get_backend() == 'zarr'
+    with sg_id.using_backend('numpy'):
+        assert sg_id.get_backend() == 'numpy'
+    assert sg_id.get_backend() == 'zarr'
+
+
+def test_using_backend_restores_on_exception(sg_id):
+    try:
+        with sg_id.using_backend('numpy'):
+            raise ValueError('intentional error')
+    except ValueError:
+        pass
+    assert sg_id.get_backend() == 'zarr'
+
+
+def test_using_backend_invalid_raises(sg_id):
+    with pytest.raises(ValueError):
+        with sg_id.using_backend('invalid'):
+            pass
+
+
+# ---------------------------------------------------------------------------
+# add_data / get_data / update_data / delete_data
+# ---------------------------------------------------------------------------
+
+def test_add_and_get_data(sg_id):
+    data = np.array([[1.0, 2.0], [3.0, 4.0]])
+    sg_id.add_data('x', data, phase='train')
+
+    result = sg_id.get_data('x', 'train', index=None)
+    np.testing.assert_array_equal(result, data)
+
+
+def test_add_data_invalid_phase_raises(sg_id):
+    with pytest.raises(ValueError, match='Invalid phase'):
+        sg_id.add_data('x', np.array([[1.0]]), phase='bad_phase')
+
+
+def test_add_data_converts_to_ndarray(sg_id):
+    sg_id.add_data('x', [[1.0, 2.0], [3.0, 4.0]], phase='train')
+    result = sg_id.get_data('x', 'train', index=None)
+    assert isinstance(result, np.ndarray)
+
+
+def test_add_data_splits_all_phases(sg_id):
+    train = np.array([[1.0], [2.0]])
+    valid = np.array([[3.0]])
+    test = np.array([[4.0], [5.0]])
+    sg_id.add_data_splits('x', train=train, valid=valid, test=test)
+
+    np.testing.assert_array_equal(sg_id.get_data('x', 'train', None), train)
+    np.testing.assert_array_equal(sg_id.get_data('x', 'valid', None), valid)
+    np.testing.assert_array_equal(sg_id.get_data('x', 'test', None), test)
+
+
+def test_add_data_splits_partial(sg_id):
+    train = np.array([[1.0], [2.0]])
+    sg_id.add_data_splits('x', train=train)
+
+    np.testing.assert_array_equal(sg_id.get_data('x', 'train', None), train)
+    assert 'x' not in sg_id.get_var_names('valid')
+    assert 'x' not in sg_id.get_var_names('test')
+
+
+def test_update_data_by_index(sg_id):
+    data = np.array([[1.0, 2.0], [3.0, 4.0]])
+    sg_id.add_data('x', data, phase='train')
+    sg_id.update_data('x', np.array([99.0, 99.0]), phase='train', index=0)
+
+    result = sg_id.get_data('x', 'train', 0)
+    np.testing.assert_array_equal(result, [99.0, 99.0])
+
+
+def test_delete_data_single_phase(sg_id):
+    sg_id.add_data('x', np.array([[1.0]]), phase='train')
+    sg_id.delete_data('x', phase='train')
+
+    assert 'x' not in sg_id.get_var_names('train')
+
+
+def test_delete_data_all_phases(sg_id):
+    sg_id.add_data('x', np.array([[1.0]]), phase='train')
+    sg_id.add_data('x', np.array([[2.0]]), phase='valid')
+    sg_id.add_data('x', np.array([[3.0]]), phase='test')
+    sg_id.delete_data('x', phase='all')
+
+    assert 'x' not in sg_id.get_var_names('train')
+    assert 'x' not in sg_id.get_var_names('valid')
+    assert 'x' not in sg_id.get_var_names('test')
+
+
+def test_get_var_names(sg_id):
+    sg_id.add_data('x', np.array([[1.0]]), phase='train')
+    sg_id.add_data('y', np.array([[2.0]]), phase='train')
+
+    names = sg_id.get_var_names('train')
+    assert 'x' in names
+    assert 'y' in names
+
+
+def test_get_var_names_empty_phase(sg_id):
+    names = sg_id.get_var_names('train')
+    assert names == []
+
+
+# ---------------------------------------------------------------------------
+# compile
+# ---------------------------------------------------------------------------
+
+def test_compile_succeeds_with_consistent_data(sg_id):
+    sg_id.add_data('x', np.array([[1.0], [2.0]]), phase='train')
+    sg_id.add_data('y', np.array([[3.0], [4.0]]), phase='train')
+    sg_id.compile()  # should not raise
+
+
+def test_compile_raises_on_inconsistent_event_counts(sg_id):
+    sg_id.add_data('x', np.array([[1.0], [2.0]]), phase='train')
+    sg_id.add_data('y', np.array([[3.0]]), phase='train')
+
+    with pytest.raises(ValueError, match='Inconsistent event counts'):
+        sg_id.compile()
+
+
+def test_compile_sets_compiled_flag(sg_id):
+    sg_id.add_data('x', np.array([[1.0], [2.0]]), phase='train')
+    sg_id.compile()
+
+    backend = sg_id.get_backend()
+    assert sg_id._metadata[DATA_ID]['compiled'][backend] is True
+
+
+def test_compile_sets_size(sg_id):
+    sg_id.add_data('x', np.array([[1.0], [2.0], [3.0]]), phase='train')
+    sg_id.compile()
+
+    backend = sg_id.get_backend()
+    assert sg_id._metadata[DATA_ID]['sizes'][backend]['train'] == 3
+
+
+def test_add_data_after_compile_resets_flag(sg_id):
+    sg_id.add_data('x', np.array([[1.0]]), phase='train')
+    sg_id.compile()
+    sg_id.add_data('x', np.array([[2.0]]), phase='train')
+
+    backend = sg_id.get_backend()
+    assert sg_id._metadata[DATA_ID]['compiled'][backend] is False
+
+
+# ---------------------------------------------------------------------------
+# __getitem__ / _PhaseAccessor / _VarAccessor
+# ---------------------------------------------------------------------------
+
+def test_getitem_returns_phase_accessor(sg_id):
+    accessor = sg_id['train']
+    assert isinstance(accessor, _PhaseAccessor)
+
+
+def test_getitem_all_returns_phase_accessor(sg_id):
+    accessor = sg_id['all']
+    assert isinstance(accessor, _PhaseAccessor)
+
+
+def test_getitem_invalid_phase_raises(sg_id):
+    with pytest.raises(NotImplementedError):
+        sg_id['bad_phase']
+
+
+def test_phase_accessor_setitem(sg_id):
+    data = np.array([[1.0, 2.0]])
+    sg_id['train']['x'] = data
+
+    result = sg_id.get_data('x', 'train', None)
+    np.testing.assert_array_equal(result, data)
+
+
+def test_phase_accessor_delitem(sg_id):
+    sg_id.add_data('x', np.array([[1.0]]), phase='train')
+    del sg_id['train']['x']
+
+    assert 'x' not in sg_id.get_var_names('train')
+
+
+def test_phase_accessor_contains(sg_id):
+    sg_id.add_data('x', np.array([[1.0]]), phase='train')
+
+    assert 'x' in sg_id['train']
+    assert 'y' not in sg_id['train']
+
+
+def test_phase_accessor_iter(sg_id):
+    sg_id.add_data('x', np.array([[1.0]]), phase='train')
+    sg_id.add_data('y', np.array([[2.0]]), phase='train')
+
+    # Use a comprehension to avoid Python calling __len__ (which requires compile)
+    names = [n for n in sg_id['train']]
+    assert 'x' in names
+    assert 'y' in names
+
+
+def test_phase_accessor_items(sg_id):
+    data = np.array([[1.0, 2.0], [3.0, 4.0]])
+    sg_id.add_data('x', data, phase='train')
+
+    items = list(sg_id['train'].items())
+    assert len(items) == 1
+    assert items[0][0] == 'x'
+    np.testing.assert_array_equal(items[0][1], data)
+
+
+def test_phase_accessor_len_after_compile(sg_id):
+    sg_id.add_data('x', np.array([[1.0], [2.0], [3.0]]), phase='train')
+    sg_id.compile()
+
+    assert len(sg_id['train']) == 3
+
+
+def test_phase_accessor_len_before_compile_raises(sg_id):
+    sg_id.add_data('x', np.array([[1.0], [2.0]]), phase='train')
+
+    with pytest.raises(ValueError, match='compile'):
+        len(sg_id['train'])
+
+
+def test_var_accessor_getitem_int(sg_id):
+    data = np.array([[1.0, 2.0], [3.0, 4.0]])
+    sg_id.add_data('x', data, phase='train')
+
+    result = sg_id['train']['x'][0]
+    np.testing.assert_array_equal(result, data[0])
+
+
+def test_var_accessor_getitem_slice(sg_id):
+    data = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+    sg_id.add_data('x', data, phase='train')
+
+    result = sg_id['train']['x'][1:3]
+    np.testing.assert_array_equal(result, data[1:3])
+
+
+def test_var_accessor_setitem(sg_id):
+    data = np.array([[1.0, 2.0], [3.0, 4.0]])
+    sg_id.add_data('x', data, phase='train')
+
+    sg_id['train']['x'][0] = np.array([99.0, 99.0])
+    result = sg_id.get_data('x', 'train', 0)
+    np.testing.assert_array_equal(result, [99.0, 99.0])
+
+
+def test_var_accessor_getitem_invalid_type_raises(sg_id):
+    sg_id.add_data('x', np.array([[1.0]]), phase='train')
+
+    with pytest.raises(NotImplementedError):
+        _ = sg_id['train']['x']['bad_index']
+
+
+def test_var_accessor_setitem_invalid_type_raises(sg_id):
+    sg_id.add_data('x', np.array([[1.0]]), phase='train')
+
+    with pytest.raises(ValueError):
+        sg_id['train']['x']['bad_index'] = np.array([1.0])
+
+
+# ---------------------------------------------------------------------------
+# copy_to_memory / copy_to_storage
+# ---------------------------------------------------------------------------
+
+def test_copy_to_memory(sg_id):
+    data = np.array([[1.0, 2.0], [3.0, 4.0]])
+    sg_id.add_data('x', data, phase='train')
+    sg_id.copy_to_memory('x', phase='train')
+
+    with sg_id.using_backend('numpy'):
+        result = sg_id.get_data('x', 'train', None)
+    np.testing.assert_array_equal(result, data)
+
+
+def test_copy_to_memory_already_exists_raises(sg_id):
+    data = np.array([[1.0]])
+    sg_id.add_data('x', data, phase='train')
+    sg_id.copy_to_memory('x', phase='train')
+
+    with pytest.raises(ValueError, match='already exists'):
+        sg_id.copy_to_memory('x', phase='train')
+
+
+def test_copy_to_memory_with_output_var_name(sg_id):
+    data = np.array([[1.0, 2.0]])
+    sg_id.add_data('x', data, phase='train')
+    sg_id.copy_to_memory('x', phase='train', output_var_name='x_mem')
+
+    with sg_id.using_backend('numpy'):
+        result = sg_id.get_data('x_mem', 'train', None)
+    np.testing.assert_array_equal(result, data)
+
+
+def test_copy_to_storage(sg_id):
+    sg_id.set_backend('numpy')
+    data = np.array([[1.0, 2.0], [3.0, 4.0]])
+    sg_id.add_data('x', data, phase='train')
+    sg_id.copy_to_storage('x', phase='train')
+
+    with sg_id.using_backend('zarr'):
+        result = sg_id.get_data('x', 'train', None)
+    np.testing.assert_array_equal(result, data)
+
+
+def test_copy_to_storage_already_exists_raises(tmp_path):
+    # Start with numpy-only data, copy to storage, then try to copy again
+    sg = StoreGate(output_dir=str(tmp_path), mode='w')
+    sg.set_data_id(DATA_ID)
+    sg.set_backend('numpy')
+
+    data = np.array([[1.0]])
+    sg.add_data('x', data, phase='train')
+    sg.copy_to_storage('x', phase='train')
+
+    with pytest.raises(ValueError, match='already exists'):
+        sg.copy_to_storage('x', phase='train')

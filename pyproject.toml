@@ -18,6 +18,16 @@ pytorch = [
     "torch>=2.10.0",
     "torchinfo>=1.8.0",
 ]
+dev = [
+    "pytest>=7.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: unit tests",
+    "integration: integration tests",
+]
