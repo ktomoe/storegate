@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
 class AgentTask(Task):
     """Agent task class for the default functions."""
-    _PROTECTED_KEYS: frozenset[str] = frozenset({'storegate', 'cuda_id', 'ml'})
+    _PROTECTED_KEYS: frozenset[str] = frozenset({'storegate', 'ml'})
 
     def __init__(self, storegate: StoreGate) -> None:
         self._storegate = storegate
@@ -22,7 +22,7 @@ class AgentTask(Task):
         for key, value in params.items():
             if key in self._PROTECTED_KEYS:
                 raise AttributeError(f'{key} is not a valid hyperparameter.')
-            if not hasattr(self, '_' + key):
+            if '_' + key not in self.__dict__:
                 raise AttributeError(f'{key} is not defined.')
 
             setattr(self, '_' + key, value)

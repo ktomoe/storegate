@@ -9,6 +9,12 @@ import numpy as np
 
 class Database(metaclass=ABCMeta):
     """Base class of Database."""
+
+    @staticmethod
+    def _normalize_index(index: int | slice | None) -> int | slice:
+        """Convert None to a full-range slice."""
+        return slice(0, None) if index is None else index
+
     @abstractmethod
     def initialize(self, data_id: str) -> None:
         """Initialize database, and set data_id."""

@@ -56,6 +56,7 @@ class DLTask(AgentTask):
         self._num_epochs: int = num_epochs
         self._batch_size: int = batch_size
         self._preload: bool = preload
+        self._preloaded: bool = False
 
 
     def set_hps(self, params: dict[str, Any]) -> None:
@@ -74,7 +75,7 @@ class DLTask(AgentTask):
             else:
                 if key in self._PROTECTED_KEYS:
                     raise AttributeError(f'{key} is not a valid hyperparameter.')
-                if not hasattr(self, '_' + key):
+                if '_' + key not in self.__dict__:
                     raise AttributeError(f'{key} is not defined.')
 
                 setattr(self, '_' + key, value)
@@ -88,11 +89,11 @@ class DLTask(AgentTask):
         self.compile()
 
         if self._preload:
-            for phase in const.PHASES:
-                for var_name in self._input_var_names:
-                    self._storegate.copy_to_memory(var_name, phase=phase)
-                for var_name in self._true_var_names:
-                    self._storegate.copy_to_memory(var_name, phase=phase)
+            if not self._preloaded:
+                for phase in const.PHASES:
+                    for var_name in (self._input_var_names or []) + (self._true_var_names or []):
+                        self._storegate.copy_to_memory(var_name, phase=phase)
+                self._preloaded = True
 
             with self._storegate.using_backend('numpy'):
                 self._storegate.compile()

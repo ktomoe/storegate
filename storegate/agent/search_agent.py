@@ -4,6 +4,7 @@ import copy
 import time
 import json
 import multiprocessing as mp
+from pathlib import Path
 from typing import Any
 from tqdm import tqdm
 from itertools import product
@@ -44,11 +45,31 @@ class SearchAgent(Agent):
         self._num_trials = num_trials
         self._cuda_ids = cuda_ids
         self._disable_tqdm = disable_tqdm
-        self._json_dump = json_dump
+        self._json_dump: Path | None = self._validate_json_dump(json_dump)
 
         self._context = 'spawn'
         self._history: list[dict[str, Any]] = []
 
+
+    @staticmethod
+    def _validate_json_dump(json_dump: str | None) -> Path | None:
+        """Validate and resolve the json_dump path.
+
+        Raises:
+            ValueError: If the path has a non-.json suffix or parent directory does not exist.
+        """
+        if json_dump is None:
+            return None
+        path = Path(json_dump).resolve()
+        if path.suffix != '.json':
+            raise ValueError(
+                f'json_dump must end with ".json", got: {json_dump!r}'
+            )
+        if not path.parent.exists():
+            raise ValueError(
+                f'json_dump parent directory does not exist: {path.parent}'
+            )
+        return path
 
     def all_combinations(self, hps: dict[str, list[Any]] | None) -> list[dict[str, Any]]:
         if hps is None:
@@ -76,16 +97,20 @@ class SearchAgent(Agent):
 
     def finalize(self) -> None:
         self._history.sort(key=lambda r: (r['job_id'], r.get('trial_id') or 0))
-        if self._json_dump:
-            with open(self._json_dump, 'w', encoding="utf-8") as f:
-                json.dump(self._history, f, ensure_ascii=False, indent=2)
+        if self._json_dump is not None:
+            self._json_dump.write_text(
+                json.dumps(self._history, ensure_ascii=False, indent=2),
+                encoding='utf-8',
+            )
 
 
     def execute_pool_jobs(self, ctx: Any, queue: Any, args: list[list[Any]]) -> None:
         """(expert method) Execute multiprocessing pool jobs."""
         jobs = copy.deepcopy(args)
 
-        pool: list[Any] = [0] * len(self._cuda_ids)
+        # cuda_ids=None means use the task's own device; run with a single worker.
+        cuda_ids = self._cuda_ids if self._cuda_ids is not None else [None]
+        pool: list[Any] = [0] * len(cuda_ids)
         num_jobs = len(jobs)
         all_done = False
 
@@ -110,7 +135,7 @@ class SearchAgent(Agent):
                             time.sleep(0.05)
                             job_arg = jobs.pop(0)
                             pool[ii] = ctx.Process(target=self.execute_wrapper,
-                                                   args=(queue, *job_arg, self._cuda_ids[ii]),
+                                                   args=(queue, *job_arg, cuda_ids[ii]),
                                                    daemon=False)
                             pool[ii].start()
                             pbar.update(1)
@@ -132,10 +157,11 @@ class SearchAgent(Agent):
         hps: dict[str, Any],
         job_id: int,
         trial_id: int | None,
-        cuda_id: int,
+        cuda_id: int | None,
     ) -> None:
         """(expert method) Wrapper method to execute multiprocessing pipeline."""
-        hps['cuda_id'] = cuda_id
+        if cuda_id is not None:
+            hps['cuda_id'] = cuda_id
         result = self.execute_task(task, hps, job_id, trial_id)
         queue.put(result)
 

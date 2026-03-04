@@ -39,13 +39,15 @@ class StoreGateDataset(tdata.Dataset):  # type: ignore[type-arg]
         self,
         var_names: str | list[str] | None,
         index: int | None = None,
-    ) -> torch.Tensor | list[torch.Tensor]:
+    ) -> torch.Tensor | list[torch.Tensor] | None:
         """Load var_names from storegate as tensors.
 
         Args:
-            var_names: str or list of str.
+            var_names: str or list of str. None returns None.
             index: sample index. None returns all samples.
         """
+        if var_names is None:
+            return None
         if isinstance(var_names, str):
             return torch.as_tensor(self._storegate.get_data(var_names, self._phase, index))
         if len(var_names) == 1:  # type: ignore[arg-type]
@@ -66,9 +68,11 @@ class StoreGateDataset(tdata.Dataset):  # type: ignore[type-arg]
 
     def _index_tensor(
         self,
-        tensors: torch.Tensor | list[torch.Tensor],
+        tensors: torch.Tensor | list[torch.Tensor] | None,
         index: int,
-    ) -> torch.Tensor | list[torch.Tensor]:
+    ) -> torch.Tensor | list[torch.Tensor] | None:
+        if tensors is None:
+            return None
         if isinstance(tensors, list):
             return [self._index_tensor(t, index) for t in tensors]  # type: ignore[return-value]
         return tensors[index]

@@ -5,8 +5,7 @@ Attributes:
     VALID (str): constant str to indicate *valid* phase.
     TEST (str): constant str to indicate *test* phase.
     PHASES (tuple): constant tuple of TRAIN, VALID and TEST.
-    INVALID (int): integer to indicate invalid value.
-    PBAR_FORMAT (str): format of tqdm progress bar.
+PBAR_FORMAT (str): format of tqdm progress bar.
     PBAR_ARGS (dict): args of tqdm progress bar.
 
 Examples:
@@ -26,7 +25,6 @@ TRAIN: Final[str] = 'train'
 VALID: Final[str] = 'valid'
 TEST: Final[str] = 'test'
 PHASES: Final[tuple[str, ...]] = (TRAIN, VALID, TEST)
-INVALID: Final[int] = -9999
 
 PBAR_FORMAT: Final[str] = '{desc}: {percentage:3.0f}%| {n_fmt: >4}/{total_fmt: >4} [{rate_fmt: >16}{postfix}]'
 PBAR_ARGS: Final[dict[str, Any]] = dict(unit=' batch', ncols=150, bar_format=PBAR_FORMAT)

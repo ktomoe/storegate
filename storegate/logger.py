@@ -94,6 +94,16 @@ def counter(count: int, max_counts: int, divide: int = 1, message: str | None = 
             info(f'({count}/{max_counts}) events processed ({message})')
 
 
+def _header_line(message: str, char: str) -> str:
+    """Build a single decorated header line using char as padding."""
+    if len(message) % 2 == 1:
+        message += ' '
+    pad = (80 - len(message) - 2) // 2
+    if message == '':
+        return char * (pad * 2 + 2)
+    return char * pad + ' ' + message + ' ' + char * pad
+
+
 def header1(message: str, level: Callable[[str], None] | None = None) -> None:
     """Show the following header.
 
@@ -103,16 +113,9 @@ def header1(message: str, level: Callable[[str], None] | None = None) -> None:
     """
     if level is None:
         level = info
-    if len(message) % 2 == 1:
-        message += ' '
-    len1 = 80
-    len2 = (len1 - len(message) - 2) // 2
-    level("=" * len1)
-    if message == '':
-        level(("=" * len2) + '==' + ("=" * len2))
-    else:
-        level(("=" * len2) + ' ' + message + ' ' + ("=" * len2))
-    level("=" * len1)
+    level("=" * 80)
+    header3(message, level)
+    level("=" * 80)
 
 
 def header2(message: str, level: Callable[[str], None] | None = None) -> None:
@@ -122,14 +125,7 @@ def header2(message: str, level: Callable[[str], None] | None = None) -> None:
     """
     if level is None:
         level = info
-    if len(message) % 2 == 1:
-        message += ' '
-    len1 = 80
-    len2 = (len1 - len(message) - 2) // 2
-    if message == '':
-        level(("-" * len2) + '--' + ("-" * len2))
-    else:
-        level(("-" * len2) + ' ' + message + ' ' + ("-" * len2))
+    level(_header_line(message, '-'))
 
 
 def header3(message: str, level: Callable[[str], None] | None = None) -> None:
@@ -139,14 +135,7 @@ def header3(message: str, level: Callable[[str], None] | None = None) -> None:
     """
     if level is None:
         level = info
-    if len(message) % 2 == 1:
-        message += ' '
-    len1 = 80
-    len2 = (len1 - len(message) - 2) // 2
-    if message == '':
-        level(("=" * len2) + '==' + ("=" * len2))
-    else:
-        level(("=" * len2) + ' ' + message + ' ' + ("=" * len2))
+    level(_header_line(message, '='))
 
 
 def table(

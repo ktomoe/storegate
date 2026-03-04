@@ -25,6 +25,10 @@ class ZarrDatabase(Database):
         In writable modes, groups are created if they do not exist.
         """
         if self._mode == 'r':
+            if data_id not in self._db.group_keys():
+                raise KeyError(
+                    f"data_id '{data_id}' does not exist in '{self._output_dir}' (mode='r')."
+                )
             return
         db_data_id = self._db.require_group(data_id)
         for phase in const.PHASES:
@@ -41,16 +45,10 @@ class ZarrDatabase(Database):
             db.create_array(name=var_name, data=data, chunks=chunks)
 
     def update_data(self, data_id: str, var_name: str, data: np.ndarray, phase: str, index: int | slice | None) -> None:
-        if index is None:
-            index = slice(0, None)
-
-        self._db[data_id][phase][var_name][index] = data
+        self._db[data_id][phase][var_name][self._normalize_index(index)] = data
 
     def get_data(self, data_id: str, var_name: str, phase: str, index: int | slice | None) -> np.ndarray:
-        if index is None:
-            index = slice(0, None)
-
-        return self._db[data_id][phase][var_name][index]  # type: ignore[no-any-return]
+        return self._db[data_id][phase][var_name][self._normalize_index(index)]  # type: ignore[no-any-return]
 
     def delete_data(self, data_id: str, var_name: str, phase: str) -> None:
         if var_name not in self._db[data_id][phase].array_keys():

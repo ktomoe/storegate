@@ -58,6 +58,7 @@ class PytorchTask(DLTask):
         """Compile device."""
         if self._cuda_id is not None:
             self._device = torch.device(f'cuda:{self._cuda_id}')
+        self._is_gpu = 'cuda' in self._device.type
 
     def compile_model(self) -> None:
         """Compile model."""
@@ -149,9 +150,10 @@ class PytorchTask(DLTask):
 
     def predict(self) -> dict[str, Any]:
         """Predict and upload outputs to storegate."""
-        for var_name in self._output_var_names:
-            if var_name in self._storegate.get_var_names('test'):
-                self._storegate.delete_data(var_name, 'test')
+        if self._output_var_names is not None:
+            for var_name in self._output_var_names:
+                if var_name in self._storegate.get_var_names('test'):
+                    self._storegate.delete_data(var_name, 'test')
         self._storegate.compile()
 
         self._ml.model.eval()
@@ -252,6 +254,9 @@ class PytorchTask(DLTask):
 
 
     def _output_to_storegate(self, outputs: torch.Tensor | list[torch.Tensor]) -> None:
+        if self._output_var_names is None:
+            return
+
         if not isinstance(outputs, list):
             outputs = [outputs]
 

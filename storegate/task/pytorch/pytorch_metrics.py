@@ -4,6 +4,8 @@ from typing import Any, Callable, TYPE_CHECKING
 
 import torch
 
+from storegate import logger
+
 if TYPE_CHECKING:
     from storegate.task.dl_env import DLEnv
 
@@ -19,6 +21,9 @@ class EpochMetric:
         self.ml = ml
         self.total: int = 0
         self.buffs: list[Any] = []
+        for metric in metrics:
+            if isinstance(metric, str) and not hasattr(self, metric):
+                logger.warn(f"Unknown metric '{metric}' will be ignored.")
 
     def __call__(self, batch_result: dict[str, Any]) -> dict[str, Any]:
         result: dict[str, Any] = {}

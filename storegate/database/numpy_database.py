@@ -26,9 +26,10 @@ class NumpyDatabase(Database):
     def add_data(self, data_id: str, var_name: str, data: np.ndarray, phase: str) -> None:
         if var_name in self._db[data_id][phase]:
             tmp_data = self._db[data_id][phase][var_name]
-            self._db[data_id][phase][var_name] = np.concatenate((tmp_data, data), axis=0)
-            self._metadata[data_id][phase][var_name]['type'] = data.dtype.name
-            self._metadata[data_id][phase][var_name]['shape'] = data.shape[1:]
+            concatenated = np.concatenate((tmp_data, data), axis=0)
+            self._db[data_id][phase][var_name] = concatenated
+            self._metadata[data_id][phase][var_name]['type'] = concatenated.dtype.name
+            self._metadata[data_id][phase][var_name]['shape'] = concatenated.shape[1:]
             self._metadata[data_id][phase][var_name]['total_events'] += len(data)
 
         else:
@@ -41,16 +42,10 @@ class NumpyDatabase(Database):
             }
 
     def update_data(self, data_id: str, var_name: str, data: np.ndarray, phase: str, index: int | slice | None) -> None:
-        if index is None:
-            index = slice(0, None)
-
-        self._db[data_id][phase][var_name][index] = data
+        self._db[data_id][phase][var_name][self._normalize_index(index)] = data
 
     def get_data(self, data_id: str, var_name: str, phase: str, index: int | slice | None) -> np.ndarray:
-        if index is None:
-            index = slice(0, None)
-
-        return self._db[data_id][phase][var_name][index]  # type: ignore[no-any-return]
+        return self._db[data_id][phase][var_name][self._normalize_index(index)]  # type: ignore[no-any-return]
 
     def delete_data(self, data_id: str, var_name: str, phase: str) -> None:
         if var_name not in self._db[data_id][phase]:

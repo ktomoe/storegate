@@ -199,7 +199,7 @@ class StoreGate:
         _validate_phase(phase)
         data = np.asarray(data)
         self._db.add_data(self._data_id, var_name, data, phase)
-        self._metadata[self._data_id]['compiled'][self.get_backend()] = False
+        self._invalidate_compiled(phase)
 
 
     @require_data_id
@@ -247,7 +247,7 @@ class StoreGate:
 
         else:
             self._db.delete_data(self._data_id, var_name, phase)
-        self._metadata[self._data_id]['compiled'][self.get_backend()] = False
+        self._invalidate_compiled(phase)
 
 
     @require_data_id
@@ -265,14 +265,12 @@ class StoreGate:
         if output_var_name is None:
             output_var_name = var_name
 
-        with self.using_backend('numpy'):
-            if output_var_name in self.get_var_names(phase):
-                raise ValueError(f'{output_var_name} already exists in memory. Delete first or use a different output_var_name.')
-
         with self.using_backend('zarr'):
             tmp_data = self.get_data(var_name, phase=phase)
 
         with self.using_backend('numpy'):
+            if output_var_name in self.get_var_names(phase):
+                raise ValueError(f'{output_var_name} already exists in memory. Delete first or use a different output_var_name.')
             self.add_data(output_var_name, tmp_data, phase)
 
 
@@ -283,14 +281,12 @@ class StoreGate:
         if output_var_name is None:
             output_var_name = var_name
 
-        with self.using_backend('zarr'):
-            if output_var_name in self.get_var_names(phase):
-                raise ValueError(f'{output_var_name} already exists in storage. Delete first or use a different output_var_name.')
-
         with self.using_backend('numpy'):
             tmp_data = self.get_data(var_name, phase=phase)
 
         with self.using_backend('zarr'):
+            if output_var_name in self.get_var_names(phase):
+                raise ValueError(f'{output_var_name} already exists in storage. Delete first or use a different output_var_name.')
             self.add_data(output_var_name, tmp_data, phase)
 
 
@@ -332,6 +328,18 @@ class StoreGate:
         if show_info:
             self.show_info()
 
+
+    def _invalidate_compiled(self, phase: str) -> None:
+        """Mark the current backend as not compiled and clear stale size entries."""
+        backend = self.get_backend()
+        meta = self._metadata[self._data_id]
+        meta['compiled'][backend] = False
+        sizes = meta['sizes'][backend]
+        if phase == 'all':
+            for iphase in const.PHASES:
+                sizes.pop(iphase, None)
+        else:
+            sizes.pop(phase, None)
 
     @require_data_id
     def show_info(self) -> None:
