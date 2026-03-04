@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "storegate"
+version = "1.0.0"
+license = { file = "LICENSE" }
+requires-python = ">=3.8"
+dependencies = [
+    "numpy>=2.4.2",
+    "zarr>=3.1.5",
+    "torch>=2.10.0",
+    "torchinfo>=1.8.0",
+    "tqdm>=4.67.3",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
