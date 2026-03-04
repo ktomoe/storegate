@@ -82,23 +82,21 @@ class DLTask(AgentTask):
 
         self.compile()
 
-
-        org_backend = self._storegate.get_backend()
         if self._preload:
             for phase in const.PHASES:
-                for input_var_name in self._input_var_names:
-                    self._storegate.copy_to_memory(input_var_name, phase=phase)
-                for true_var_name in self._true_var_names:
-                    self._storegate.copy_to_memory(true_var_name, phase=phase)
+                for var_name in self._input_var_names:
+                    self._storegate.copy_to_memory(var_name, phase=phase)
+                for var_name in self._true_var_names:
+                    self._storegate.copy_to_memory(var_name, phase=phase)
 
-            self._storegate.set_backend('numpy')
-            self._storegate.compile()
+            with self._storegate.using_backend('numpy'):
+                self._storegate.compile()
+                rtn_fit = self.fit()
+                rtn_predict = self.predict()
+        else:
+            rtn_fit = self.fit()
+            rtn_predict = self.predict()
 
-        rtn_fit = self.fit()
-        rtn_predict = self.predict()
-
-        self._storegate.set_backend(org_backend)
-        
         return rtn_fit | rtn_predict
 
 

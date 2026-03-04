@@ -67,12 +67,12 @@ class PytorchTask(DLTask):
         self._ml.model = util.build_module(self._model, self._model_args, None)
         self._ml.model.to(self._device)
 
-        if self._torch_compile:
-            self._ml.model = torch.compile(self._ml.model)
-
         if self._torchinfo:
             from torchinfo import summary
             summary(self._ml.model)
+
+        if self._torch_compile:
+            self._ml.model = torch.compile(self._ml.model)
 
 
     def compile_optimizer(self):
@@ -119,10 +119,15 @@ class PytorchTask(DLTask):
 
     def fit(self):
         """Train model over epoch."""
-        dataloaders = dict(train=self.get_dataloader('train'),
-                           valid=self.get_dataloader('valid'))
+        has_valid = bool(self._storegate.get_var_names('valid'))
 
-        rtn_history = {'train': [], 'valid': []}
+        dataloaders = {'train': self.get_dataloader('train')}
+        if has_valid:
+            dataloaders['valid'] = self.get_dataloader('valid')
+
+        rtn_history = {'train': []}
+        if has_valid:
+            rtn_history['valid'] = []
 
         for epoch in range(1, self._num_epochs + 1):
             # train
@@ -131,9 +136,10 @@ class PytorchTask(DLTask):
             rtn_history['train'].append(rtn_result)
 
             # valid
-            self._ml.model.eval()
-            rtn_result = self.step_epoch(epoch, 'valid', dataloaders['valid'])
-            rtn_history['valid'].append(rtn_result)
+            if has_valid:
+                self._ml.model.eval()
+                rtn_result = self.step_epoch(epoch, 'valid', dataloaders['valid'])
+                rtn_history['valid'].append(rtn_result)
 
         return rtn_history
 

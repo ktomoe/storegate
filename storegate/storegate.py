@@ -1,6 +1,9 @@
 """StoreGate module."""
 
 import functools
+from contextlib import contextmanager
+
+import numpy as np
 
 from storegate import logger, const
 from storegate.database import HybridDatabase
@@ -93,6 +96,13 @@ def require_data_id(method):
     return wrapper
 
 
+def _validate_phase(phase, allow_all=False):
+    """Raise ValueError if phase is not a valid phase name."""
+    valid = const.PHASES + ('all',) if allow_all else const.PHASES
+    if phase not in valid:
+        raise ValueError(f"Invalid phase '{phase}'. Must be one of {valid}.")
+
+
 class StoreGate:
     """Data management class."""
 
@@ -106,6 +116,19 @@ class StoreGate:
         if data_id is not None:
             self.set_data_id(data_id)
 
+
+    def __repr__(self):
+        if self._data_id is None:
+            return 'StoreGate(data_id=None)'
+        backend = self.get_backend()
+        compiled = self._metadata[self._data_id]['compiled'][backend]
+        return f'StoreGate(data_id={self._data_id!r}, backend={backend!r}, compiled={compiled})'
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False
 
     @require_data_id
     def __getitem__(self, item):
@@ -147,9 +170,24 @@ class StoreGate:
     def get_backend(self):
         return self._db.get_backend()
 
+    @require_data_id
+    @contextmanager
+    def using_backend(self, backend):
+        """Context manager that temporarily switches to ``backend``, restoring the original on exit."""
+        if backend not in ['numpy', 'zarr']:
+            raise ValueError(f'Unsupported backend: "{backend}". Use "numpy" or "zarr".')
+        old = self.get_backend()
+        self.set_backend(backend)
+        try:
+            yield self
+        finally:
+            self.set_backend(old)
+
 
     @require_data_id
     def add_data(self, var_name, data, phase):
+        _validate_phase(phase)
+        data = np.asarray(data)
         self._db.add_data(self._data_id, var_name, data, phase)
         self._metadata[self._data_id]['compiled'][self.get_backend()] = False
 
@@ -177,6 +215,7 @@ class StoreGate:
     @require_data_id
     def update_data(self, var_name, data, phase, index=None):
         """Update data in storegate with given options."""
+        _validate_phase(phase)
         self._db.update_data(self._data_id, var_name, data, phase, index)
         self._metadata[self._data_id]['compiled'][self.get_backend()] = False
 
@@ -184,12 +223,14 @@ class StoreGate:
     @require_data_id
     def get_data(self, var_name, phase, index=None):
         """Retrieve data from storegate with given options."""
+        _validate_phase(phase)
         return self._db.get_data(self._data_id, var_name, phase, index)
 
 
     @require_data_id
     def delete_data(self, var_name, phase):
         """Delete data associated with var_names."""
+        _validate_phase(phase, allow_all=True)
         if phase == 'all':
             for iphase in const.PHASES:
                 self._db.delete_data(self._data_id, var_name, iphase)
@@ -202,6 +243,7 @@ class StoreGate:
     @require_data_id
     def get_var_names(self, phase):
         """Returns registered var_names for given phase."""
+        _validate_phase(phase)
         metadata = self._db.get_metadata(self._data_id, phase)
         return list(metadata.keys())
 
@@ -209,41 +251,37 @@ class StoreGate:
     @require_data_id
     def copy_to_memory(self, var_name, phase, output_var_name=None):
         """Copy data from storage to memory."""
+        _validate_phase(phase)
         if output_var_name is None:
             output_var_name = var_name
 
-        tmp_backend = self.get_backend()
-        try:
-            self.set_backend('numpy')
+        with self.using_backend('numpy'):
             if output_var_name in self.get_var_names(phase):
                 raise ValueError(f'{output_var_name} already exists in memory. Delete first or use a different output_var_name.')
 
-            self.set_backend('zarr')
+        with self.using_backend('zarr'):
             tmp_data = self.get_data(var_name, phase=phase)
-            self.set_backend('numpy')
+
+        with self.using_backend('numpy'):
             self.add_data(output_var_name, tmp_data, phase)
-        finally:
-            self.set_backend(tmp_backend)
 
 
     @require_data_id
     def copy_to_storage(self, var_name, phase, output_var_name=None):
         """Copy data from memory to storage."""
+        _validate_phase(phase)
         if output_var_name is None:
             output_var_name = var_name
 
-        tmp_backend = self.get_backend()
-        try:
-            self.set_backend('zarr')
+        with self.using_backend('zarr'):
             if output_var_name in self.get_var_names(phase):
                 raise ValueError(f'{output_var_name} already exists in storage. Delete first or use a different output_var_name.')
 
-            self.set_backend('numpy')
+        with self.using_backend('numpy'):
             tmp_data = self.get_data(var_name, phase=phase)
-            self.set_backend('zarr')
+
+        with self.using_backend('zarr'):
             self.add_data(output_var_name, tmp_data, phase)
-        finally:
-            self.set_backend(tmp_backend)
 
 
     @require_data_id
@@ -264,7 +302,12 @@ class StoreGate:
                 phase_events.append(data['total_events'])
 
             if len(set(phase_events)) > 1:
-                raise ValueError(f'Number of events are not consistent {metadata}')
+                detail = '\n'.join(
+                    f'  {k}: {v["total_events"]} events' for k, v in metadata.items()
+                )
+                raise ValueError(
+                    f"Inconsistent event counts in '{phase}' phase:\n{detail}"
+                )
 
             if phase_events:
                 num_events.append(phase_events[0])

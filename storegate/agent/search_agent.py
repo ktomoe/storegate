@@ -1,6 +1,7 @@
 import copy
 import time
 import json
+import multiprocessing as mp
 from tqdm import tqdm
 from itertools import product
 
@@ -40,6 +41,7 @@ class SearchAgent(Agent):
         self._disable_tqdm = disable_tqdm
         self._json_dump = json_dump
 
+        self._context = 'spawn'
         self._history = []
 
 
@@ -53,10 +55,22 @@ class SearchAgent(Agent):
         return [dict(zip(keys, value)) for value in product(*values)]
 
     def execute(self):
-        pass
+        ctx = mp.get_context(self._context)
+        queue = ctx.Queue()
+        args = []
+
+        for job_id, hps in enumerate(self._hps):
+            if self._num_trials is None:
+                args.append([self._task, hps, job_id, None])
+            else:
+                for trial_id in range(self._num_trials):
+                    args.append([self._task, hps, job_id, trial_id])
+
+        self.execute_pool_jobs(ctx, queue, args)
 
 
     def finalize(self):
+        self._history.sort(key=lambda r: (r['job_id'], r.get('trial_id') or 0))
         if self._json_dump:
             with open(self._json_dump, 'w', encoding="utf-8") as f:
                 json.dump(self._history, f, ensure_ascii=False, indent=2)
@@ -121,9 +135,12 @@ class SearchAgent(Agent):
             'trial_id': trial_id,
         }
 
-        task.set_hps(hps)
-        rtn_result = task.execute()
-        task.finalize()
+        try:
+            task.set_hps(hps)
+            result['result'] = task.execute()
+            task.finalize()
+        except Exception as e:
+            result['error'] = f'{type(e).__name__}: {e}'
+            logger.error(f'Job {job_id} (trial {trial_id}) failed: {result["error"]}')
 
-        result['result'] = rtn_result
         return result
