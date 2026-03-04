@@ -1,91 +1,78 @@
 """Logger module.
 
-In principle, modules in storegate library use this logger. There are some print levels: ``DEBUG``,
-``INFO``, ``WARN``, ``ERROR`` and ``DISABLED``.
+In principle, modules in storegate library use this logger.
 
 Examples:
     >>> from storegate import logger
-    >>> logger.set_level(logger.INFO)  # Set to INFO
+    >>> logger.set_level(logger.INFO)
+    >>> logger.add_file_handler('storegate.log')
     >>> logger.debug("This message is not printed at INFO level.")
 """
 
-import datetime
+import logging
 import functools
 
-DEBUG = 10
-INFO = 20
-WARN = 30
-ERROR = 40
-DISABLED = 50
+DEBUG = logging.DEBUG        # 10
+INFO = logging.INFO          # 20
+WARN = logging.WARNING       # 30
+ERROR = logging.ERROR        # 40
+DISABLED = logging.CRITICAL + 10  # 60
 
-MIN_LEVEL = 20
+_logger = logging.getLogger('storegate')
+_logger.setLevel(logging.INFO)
+_logger.propagate = False
 
+_fmt = logging.Formatter('%(asctime)s [%(levelname).1s] %(message)s',
+                          datefmt='%Y-%m-%d %H:%M:%S')
 
-def convert(level):
-    """convert str to int."""
-    ret = INFO
-    if level.upper() == 'DEBUG':
-        ret = DEBUG
-    elif level.upper() == 'INFO':
-        ret = INFO
-    elif level.upper() == 'WARN':
-        ret = WARN
-    elif level.upper() == 'ERROR':
-        ret = ERROR
-    elif level.upper() == 'DISABLED':
-        ret = DISABLED
-    else:
-        warn(f'Your choice({level}) is not valid, set to INFO')
-
-    return ret
+_console_handler = logging.StreamHandler()
+_console_handler.setLevel(logging.DEBUG)
+_console_handler.setFormatter(_fmt)
+_logger.addHandler(_console_handler)
 
 
 def set_level(level):
     """Set log level.
 
     Args:
-        level (str or int): ``DEBUG``=10, ``INFO``=20, ``WARN``=30, ``ERROR``=40, ``DISABLED``=50.
+        level (str or int): ``DEBUG``=10, ``INFO``=20, ``WARN``=30, ``ERROR``=40, ``DISABLED``=60.
     """
     if isinstance(level, str):
-        level = convert(level)
-
-    global MIN_LEVEL
-    MIN_LEVEL = level
+        level = getattr(logging, level.upper(), logging.INFO)
+    _logger.setLevel(level)
 
 
-def get_now():
-    """Get current time with ``%Y-%m-%d %H:%M:%S`` format.
+def add_file_handler(filename, level=DEBUG):
+    """Add a file handler.
 
-    Returns:
-        str: the current timestamp.
+    Args:
+        filename (str): Path to the log file.
+        level (int): Minimum log level written to the file. Defaults to DEBUG.
     """
-    dt_now = datetime.datetime.now()
-
-    return dt_now.strftime('%Y-%m-%d %H:%M:%S')
+    fh = logging.FileHandler(filename)
+    fh.setLevel(level)
+    fh.setFormatter(_fmt)
+    _logger.addHandler(fh)
 
 
 def debug(msg, *args):
     """Show debug [D] message."""
-    if MIN_LEVEL <= DEBUG:
-        print(f'{get_now()} [D] {msg % args}')
+    _logger.debug(msg, *args)
 
 
 def info(msg, *args):
     """Show information [I] message."""
-    if MIN_LEVEL <= INFO:
-        print(f'{get_now()} [I] {msg % args}')
+    _logger.info(msg, *args)
 
 
 def warn(msg, *args):
     """Show warning [W] message."""
-    if MIN_LEVEL <= WARN:
-        print(f'{get_now()} [W] {msg % args}')
+    _logger.warning(msg, *args)
 
 
 def error(msg, *args):
     """Show error [E] message."""
-    if MIN_LEVEL <= ERROR:
-        print(f'{get_now()} [E] {msg % args}')
+    _logger.error(msg, *args)
 
 
 def counter(count, max_counts, divide=1, message=None):
@@ -103,13 +90,15 @@ def counter(count, max_counts, divide=1, message=None):
             info(f'({count}/{max_counts}) events processed ({message})')
 
 
-def header1(message, level=info):
+def header1(message, level=None):
     """Show the following header.
 
     >>> '================================='
     >>> '============ message ============'
     >>> '================================='
     """
+    if level is None:
+        level = info
     if len(message) % 2 == 1:
         message += ' '
     len1 = 80
@@ -122,11 +111,13 @@ def header1(message, level=info):
     level("=" * len1)
 
 
-def header2(message, level=info):
+def header2(message, level=None):
     """Show the following header.
 
     >>> '------------ message ------------'
     """
+    if level is None:
+        level = info
     if len(message) % 2 == 1:
         message += ' '
     len1 = 80
@@ -137,11 +128,13 @@ def header2(message, level=info):
         level(("-" * len2) + ' ' + message + ' ' + ("-" * len2))
 
 
-def header3(message, level=info):
+def header3(message, level=None):
     """Show the following header.
 
     >>> ============ message ============
     """
+    if level is None:
+        level = info
     if len(message) % 2 == 1:
         message += ' '
     len1 = 80
