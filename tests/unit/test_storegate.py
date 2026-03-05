@@ -232,6 +232,17 @@ def test_delete_data_all_phases(sg_id):
     assert 'x' not in sg_id.get_var_names('test')
 
 
+def test_delete_data_all_phases_partial_existence(sg_id):
+    # 'x' exists only in train and valid, not in test
+    sg_id.add_data('x', np.array([[1.0]]), phase='train')
+    sg_id.add_data('x', np.array([[2.0]]), phase='valid')
+    sg_id.delete_data('x', phase='all')  # should not raise KeyError
+
+    assert 'x' not in sg_id.get_var_names('train')
+    assert 'x' not in sg_id.get_var_names('valid')
+    assert 'x' not in sg_id.get_var_names('test')
+
+
 def test_get_var_names(sg_id):
     sg_id.add_data('x', np.array([[1.0]]), phase='train')
     sg_id.add_data('y', np.array([[2.0]]), phase='train')
@@ -444,6 +455,14 @@ def test_phase_accessor_len_before_compile_raises(sg_id):
 
     with pytest.raises(ValueError, match='compile'):
         len(sg_id['train'])
+
+
+def test_phase_accessor_len_empty_phase_returns_zero(sg_id):
+    # train has data, valid has none; compile() sets sizes['valid'] = None
+    sg_id.add_data('x', np.array([[1.0], [2.0]]), phase='train')
+    sg_id.compile()
+
+    assert len(sg_id['valid']) == 0
 
 
 def test_var_accessor_getitem_int(sg_id):

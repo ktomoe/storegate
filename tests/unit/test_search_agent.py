@@ -11,13 +11,60 @@ from storegate.agent.random_search_agent import RandomSearchAgent
 
 
 # ---------------------------------------------------------------------------
+# Picklable task stubs for parallel (spawn) integration tests.
+# Must be defined at module level so child processes can import them.
+# ---------------------------------------------------------------------------
+
+class _SumTask:
+    """Returns the sum of all HP values as 'score'."""
+    def __init__(self) -> None:
+        self._hps: dict = {}
+
+    def set_hps(self, hps: dict) -> None:
+        self._hps = hps
+
+    def execute(self) -> dict:
+        return {'score': sum(v for v in self._hps.values() if isinstance(v, (int, float)))}
+
+    def finalize(self) -> None:
+        pass
+
+
+class _FailingTask:
+    """Always raises RuntimeError on execute()."""
+    def set_hps(self, hps: dict) -> None:
+        pass
+
+    def execute(self) -> dict:
+        raise RuntimeError('intentional failure')
+
+    def finalize(self) -> None:
+        pass
+
+
+class _HpsRecordTask:
+    """Records the full hps dict (including injected cuda_id) as result."""
+    def __init__(self) -> None:
+        self._hps: dict = {}
+
+    def set_hps(self, hps: dict) -> None:
+        self._hps = dict(hps)
+
+    def execute(self) -> dict:
+        return dict(self._hps)
+
+    def finalize(self) -> None:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def make_task() -> MagicMock:
     task = MagicMock()
     task.execute.return_value = {'score': 0.9}
-    return make_task
+    return task
 
 
 def _agent(**kwargs: object) -> SearchAgent:
@@ -292,3 +339,121 @@ def test_random_search_agent_each_sample_uses_valid_values() -> None:
     for combo in agent._hps:
         assert combo['lr'] in valid['lr']
         assert combo['bs'] in valid['bs']
+
+
+# ---------------------------------------------------------------------------
+# execute / execute_pool_jobs — parallel integration
+#
+# These tests exercise the real ProcessPoolExecutor (spawn context).
+# Task stubs are defined at module level so child processes can pickle them.
+# ---------------------------------------------------------------------------
+
+def test_execute_single_job_populates_history() -> None:
+    """execute() with one HP combo fills _history with one entry."""
+    agent = SearchAgent(task=_SumTask(), hps=None)
+    agent.execute()
+    assert len(agent._history) == 1
+
+
+def test_execute_all_combos_collected() -> None:
+    """execute() collects one result per HP combination."""
+    agent = SearchAgent(task=_SumTask(), hps={'a': [1, 2], 'b': [10, 20]})
+    agent.execute()
+    assert len(agent._history) == 4
+
+
+def test_execute_result_values_are_correct() -> None:
+    """Each result['result'] reflects the HP values passed to that job."""
+    agent = SearchAgent(task=_SumTask(), hps={'a': [3, 7]})
+    agent.execute()
+    scores = {r['result']['score'] for r in agent._history}
+    assert scores == {3, 7}
+
+
+def test_execute_job_ids_cover_full_range() -> None:
+    """Every job_id from 0 to n-1 appears exactly once in history."""
+    n = 3
+    agent = SearchAgent(task=_SumTask(), hps={'a': [1, 2, 3]})
+    agent.execute()
+    assert {r['job_id'] for r in agent._history} == set(range(n))
+
+
+def test_execute_with_num_trials_generates_correct_count() -> None:
+    """2 HP combos × 3 trials = 6 history entries."""
+    agent = SearchAgent(task=_SumTask(), hps={'a': [1, 2]}, num_trials=3)
+    agent.execute()
+    assert len(agent._history) == 6
+
+
+def test_execute_with_num_trials_all_trial_ids_present() -> None:
+    """trial_id 0, 1, 2 appear for each job_id."""
+    agent = SearchAgent(task=_SumTask(), hps={'a': [1]}, num_trials=3)
+    agent.execute()
+    trial_ids = {r['trial_id'] for r in agent._history}
+    assert trial_ids == {0, 1, 2}
+
+
+def test_execute_failing_task_error_captured_not_raised() -> None:
+    """A task that raises must store 'error' in the result without crashing execute()."""
+    agent = SearchAgent(task=_FailingTask(), hps=None)
+    agent.execute()  # must not raise
+    assert len(agent._history) == 1
+    assert 'error' in agent._history[0]
+    assert 'RuntimeError' in agent._history[0]['error']
+
+
+def test_execute_failing_task_has_no_result_key() -> None:
+    agent = SearchAgent(task=_FailingTask(), hps=None)
+    agent.execute()
+    assert 'result' not in agent._history[0]
+
+
+def test_execute_cuda_ids_injected_into_hps() -> None:
+    """cuda_id is added to hps before the task sees them."""
+    agent = SearchAgent(task=_HpsRecordTask(), hps=None, cuda_ids=[5])
+    agent.execute()
+    assert agent._history[0]['result']['cuda_id'] == 5
+
+
+def test_execute_cuda_ids_round_robin_two_workers() -> None:
+    """With 2 workers and 4 jobs, cuda ids are assigned round-robin: 0,1,0,1."""
+    agent = SearchAgent(
+        task=_HpsRecordTask(),
+        hps={'a': [1, 2, 3, 4]},
+        cuda_ids=[0, 1],
+    )
+    agent.execute()
+    agent.finalize()  # sort by job_id for deterministic assertion
+    assigned = [r['result']['cuda_id'] for r in agent._history]
+    assert assigned == [0, 1, 0, 1]
+
+
+def test_execute_then_finalize_writes_json(tmp_path) -> None:
+    """Full pipeline: execute() + finalize() produces a valid, sorted JSON file."""
+    path = tmp_path / 'results.json'
+    agent = SearchAgent(
+        task=_SumTask(),
+        hps={'v': [10, 20, 30]},
+        json_dump=str(path),
+    )
+    agent.execute()
+    agent.finalize()
+
+    assert path.exists()
+    data = json.loads(path.read_text(encoding='utf-8'))
+    assert len(data) == 3
+    job_ids = [entry['job_id'] for entry in data]
+    assert job_ids == sorted(job_ids)
+
+
+def test_execute_history_is_empty_before_execute() -> None:
+    agent = SearchAgent(task=_SumTask(), hps={'a': [1, 2]})
+    assert agent._history == []
+
+
+def test_execute_multiple_calls_reset_history() -> None:
+    """Calling execute() twice resets _history; only the latest run is kept."""
+    agent = SearchAgent(task=_SumTask(), hps={'a': [1]})
+    agent.execute()
+    agent.execute()
+    assert len(agent._history) == 1

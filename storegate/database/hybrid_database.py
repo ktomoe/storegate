@@ -29,6 +29,8 @@ class HybridDatabase(Database):
         self._db['numpy'].initialize(data_id)
 
     def set_backend(self, backend: str) -> None:
+        if backend not in ('zarr', 'numpy'):
+            raise ValueError(f'Unsupported backend: "{backend}". Use "numpy" or "zarr".')
         self._backend = backend
 
     def get_backend(self) -> str:

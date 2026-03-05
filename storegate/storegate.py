@@ -43,7 +43,7 @@ class _PhaseAccessor:
     def __iter__(self) -> Iterator[str]:
         return iter(self._storegate.get_var_names(self._phase))
 
-    def items(self) -> Iterator[tuple[str, np.ndarray]]:
+    def items(self) -> Generator[tuple[str, np.ndarray], None, None]:
         """Yield (var_name, data) pairs for all variables in this phase."""
         for var_name in self:
             yield var_name, self._storegate.get_data(var_name, self._phase, index=None)
@@ -56,7 +56,8 @@ class _PhaseAccessor:
         backend = self._storegate.get_backend()
         if not self._storegate._metadata[data_id]['compiled'][backend]:
             raise ValueError('len() is supported only after compile')
-        return self._storegate._metadata[data_id]['sizes'][backend][self._phase]  # type: ignore[return-value]
+        size = self._storegate._metadata[data_id]['sizes'][backend][self._phase]
+        return 0 if size is None else size
 
 
 class _VarAccessor:
@@ -129,7 +130,34 @@ class StoreGate:
     """Data management class."""
 
     def __init__(self, output_dir: str, mode: str = 'r', chunk: int = 1000, data_id: str | None = None) -> None:
-        """Initialize the storegate and the zarr architecture."""
+        """Initialize the storegate and the zarr architecture.
+
+        Args:
+            output_dir (str): Directory path for the zarr store.
+            mode (str): File open mode passed to zarr.
+                ``'w'`` creates or overwrites the store.
+                ``'a'`` opens for appending (creates if absent).
+                ``'r'`` opens read-only; the store must already exist.
+            chunk (int): Chunk size along the first (event) axis for zarr arrays.
+            data_id (str or None): If provided, calls ``set_data_id()`` immediately.
+
+        Note:
+            In-memory metadata (compiled flags, phase sizes) is **not** persisted to
+            disk.  When reopening an existing store (``mode='r'`` or ``mode='a'``),
+            the metadata starts empty, so ``len(sg[phase])`` will raise until
+            ``compile()`` is called.
+
+        Examples:
+            Write, then reopen and read::
+
+                sg = StoreGate(output_dir='./store', mode='w', data_id='exp01')
+                sg.add_data('x', x_train, phase='train')
+
+                # Reopen in read-only mode
+                sg = StoreGate(output_dir='./store', mode='r', data_id='exp01')
+                sg.compile()          # required to enable len() and size queries
+                x = sg.get_data('x', phase='train')
+        """
 
         self._db: HybridDatabase = HybridDatabase(output_dir=output_dir, mode=mode, chunk=chunk)
         self._data_id: str | None = None
@@ -180,7 +208,13 @@ class StoreGate:
         return self._data_id
 
     def set_data_id(self, data_id: str) -> None:
-        """Set the default ``data_id`` and initialize the zarr."""
+        """Set the default ``data_id`` and initialize the zarr.
+
+        Note:
+            After reopening an existing store, call ``compile()`` once per
+            ``data_id`` to populate in-memory size metadata before using
+            ``len()`` or other size-dependent operations.
+        """
         _validate_data_id(data_id)
         self._data_id = data_id
         self._db.initialize(data_id)
@@ -275,7 +309,8 @@ class StoreGate:
         _validate_phase(phase, allow_all=True)
         if phase == 'all':
             for iphase in const.PHASES:
-                self._db.delete_data(self._data_id, var_name, iphase)
+                if var_name in self.get_var_names(iphase):
+                    self._db.delete_data(self._data_id, var_name, iphase)
 
         else:
             self._db.delete_data(self._data_id, var_name, phase)
@@ -335,6 +370,11 @@ class StoreGate:
         Validates that all variables within each phase have the same number of events.
         Note: consistency across phases (e.g. train vs valid) is intentionally not checked,
         as each phase may have a different number of events by design.
+
+        This method also populates in-memory size metadata (used by ``len()``).
+        Because this metadata is not persisted to disk, ``compile()`` must be
+        called after reopening an existing store before ``len(sg[phase])`` or
+        any other size-dependent operation is used.
 
         Args:
             show_info (bool): Print a summary table after compilation.

@@ -29,11 +29,15 @@ class NumpyDatabase(Database):
                 self._metadata[data_id][phase] = {}
 
     def _materialize(self, data_id: str, var_name: str, phase: str) -> np.ndarray:
-        """Concatenate pending chunks into a single array, caching the result."""
+        """Concatenate pending chunks into a single array, caching the result.
+
+        After concatenation the chunk list is collapsed to one element so the
+        original per-chunk arrays can be garbage-collected, halving peak memory.
+        """
         if self._cache[data_id][phase][var_name] is None:
-            self._cache[data_id][phase][var_name] = np.concatenate(
-                self._chunks[data_id][phase][var_name], axis=0
-            )
+            arr = np.concatenate(self._chunks[data_id][phase][var_name], axis=0)
+            self._cache[data_id][phase][var_name] = arr
+            self._chunks[data_id][phase][var_name] = [arr]
         return self._cache[data_id][phase][var_name]  # type: ignore[return-value]
 
     def add_data(self, data_id: str, var_name: str, data: np.ndarray, phase: str) -> None:
@@ -42,7 +46,14 @@ class NumpyDatabase(Database):
             self._cache[data_id][phase][var_name] = None  # invalidate
             meta = self._metadata[data_id][phase][var_name]
             meta['total_events'] += len(data)
-            meta['type'] = np.result_type(np.dtype(meta['type']), data.dtype).name
+            promoted = np.result_type(np.dtype(meta['type']), data.dtype).name
+            if promoted != meta['type']:
+                from storegate import logger
+                logger.warn(
+                    f"dtype promotion for '{var_name}' in '{phase}': "
+                    f"{meta['type']} + {data.dtype.name} -> {promoted}"
+                )
+            meta['type'] = promoted
         else:
             self._chunks[data_id][phase][var_name] = [data]
             self._cache[data_id][phase][var_name] = None
@@ -72,7 +83,7 @@ class NumpyDatabase(Database):
     def get_metadata(self, data_id: str, phase: str) -> dict[str, Any]:
         if data_id not in self._metadata:
             return {}
-        return self._metadata[data_id][phase]  # type: ignore[no-any-return]
+        return {k: dict(v) for k, v in self._metadata[data_id][phase].items()}
 
     def close(self) -> None:
         pass

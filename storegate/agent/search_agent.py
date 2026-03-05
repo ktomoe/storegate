@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import concurrent.futures
 import copy
-import time
 import json
 import multiprocessing as mp
 from pathlib import Path
@@ -81,8 +81,7 @@ class SearchAgent(Agent):
         return [dict(zip(keys, value)) for value in product(*values)]
 
     def execute(self) -> None:
-        ctx = mp.get_context(self._context)
-        queue: mp.Queue[dict[str, Any]] = ctx.Queue()
+        self._history = []
         args: list[list[Any]] = []
 
         for job_id, hps in enumerate(self._hps):
@@ -92,7 +91,7 @@ class SearchAgent(Agent):
                 for trial_id in range(self._num_trials):
                     args.append([self._task, hps, job_id, trial_id])
 
-        self.execute_pool_jobs(ctx, queue, args)
+        self.execute_pool_jobs(args)
 
 
     def finalize(self) -> None:
@@ -104,65 +103,40 @@ class SearchAgent(Agent):
             )
 
 
-    def execute_pool_jobs(self, ctx: Any, queue: Any, args: list[list[Any]]) -> None:
-        """(expert method) Execute multiprocessing pool jobs."""
+    def execute_pool_jobs(self, args: list[list[Any]]) -> None:
+        """(expert method) Execute multiprocessing pool jobs.
+
+        Uses ``concurrent.futures.ProcessPoolExecutor`` with ``as_completed``
+        for event-driven result collection — no busy-wait, no TOCTOU.
+        Results are appended to ``self._history`` as each job finishes.
+        """
         jobs = copy.deepcopy(args)
 
         # cuda_ids=None means use the task's own device; run with a single worker.
         cuda_ids = self._cuda_ids if self._cuda_ids is not None else [None]
-        pool: list[Any] = [0] * len(cuda_ids)
         num_jobs = len(jobs)
-        all_done = False
+        num_workers = len(cuda_ids)
 
         pbar_args = dict(ncols=80, total=num_jobs, disable=self._disable_tqdm)
-        with tqdm(**pbar_args) as pbar:
-            while not all_done:
-                time.sleep(0.05)
 
-                if len(jobs) == 0:
-                    done = True
-                    for ii, process in enumerate(pool):
-                        if (process != 0) and (process.is_alive()):
-                            done = False
-                    all_done = done
+        futures: dict[concurrent.futures.Future[dict[str, Any]], None] = {}
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=num_workers,
+            mp_context=mp.get_context(self._context),
+        ) as executor, tqdm(**pbar_args) as pbar:
+            for ii, job_arg in enumerate(jobs):
+                task, hps, job_id, trial_id = job_arg
+                cuda_id = cuda_ids[ii % num_workers]
+                if cuda_id is not None:
+                    hps = dict(hps)
+                    hps['cuda_id'] = cuda_id
+                futures[executor.submit(self.execute_task, task, hps, job_id, trial_id)] = None
 
-                else:
-                    for ii, process in enumerate(pool):
-                        if len(jobs) == 0:
-                            continue
-
-                        if (process == 0) or (not process.is_alive()):
-                            job_arg = jobs.pop(0)
-                            pool[ii] = ctx.Process(target=self.execute_wrapper,
-                                                   args=(queue, *job_arg, cuda_ids[ii]),
-                                                   daemon=False)
-                            pool[ii].start()
-                            pbar.update(1)
-
-                            if self._disable_tqdm:
-                                logger.info(f'launch process ({num_jobs - len(jobs)}/{num_jobs})')
-
-                while not queue.empty():
-                    self._history.append(queue.get())
-
-        while not queue.empty():
-            self._history.append(queue.get())
-
-
-    def execute_wrapper(
-        self,
-        queue: Any,
-        task: Any,
-        hps: dict[str, Any],
-        job_id: int,
-        trial_id: int | None,
-        cuda_id: int | None,
-    ) -> None:
-        """(expert method) Wrapper method to execute multiprocessing pipeline."""
-        if cuda_id is not None:
-            hps['cuda_id'] = cuda_id
-        result = self.execute_task(task, hps, job_id, trial_id)
-        queue.put(result)
+            for future in concurrent.futures.as_completed(futures):
+                self._history.append(future.result())
+                pbar.update(1)
+                if self._disable_tqdm:
+                    logger.info(f'completed process ({len(self._history)}/{num_jobs})')
 
 
     def execute_task(

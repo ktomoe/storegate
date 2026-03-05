@@ -12,7 +12,6 @@ _VarNames = str | list[str] | None
 class DLTask(AgentTask):
     """DL task class for the default functions."""
     def __init__(self,
-                 device: str = 'cuda',
                  input_var_names: _VarNames = None,
                  output_var_names: _VarNames = None,
                  true_var_names: _VarNames = None,
@@ -90,11 +89,13 @@ class DLTask(AgentTask):
         if self._preload:
             for phase in const.PHASES:
                 for var_name in (self._input_var_names or []) + (self._true_var_names or []):
-                    if var_name in self._storegate.get_var_names(phase):
-                        with self._storegate.using_backend('numpy'):
-                            if var_name in self._storegate.get_var_names(phase):
-                                self._storegate.delete_data(var_name, phase=phase)
-                        self._storegate.copy_to_memory(var_name, phase=phase)
+                    zarr_vars = self._storegate.get_var_names(phase)  # zarr backend
+                    if var_name not in zarr_vars:
+                        continue
+                    with self._storegate.using_backend('numpy'):
+                        if var_name in self._storegate.get_var_names(phase):
+                            self._storegate.delete_data(var_name, phase=phase)
+                    self._storegate.copy_to_memory(var_name, phase=phase)
 
             with self._storegate.using_backend('numpy'):
                 self._storegate.compile()

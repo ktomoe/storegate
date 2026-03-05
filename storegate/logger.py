@@ -49,10 +49,18 @@ def set_level(level: int | str) -> None:
 def add_file_handler(filename: str, level: int = DEBUG) -> None:
     """Add a file handler.
 
+    Idempotent: if a FileHandler for the same resolved path already exists,
+    this call is a no-op.
+
     Args:
         filename (str): Path to the log file.
         level (int): Minimum log level written to the file. Defaults to DEBUG.
     """
+    import os
+    resolved = os.path.abspath(filename)
+    for h in _logger.handlers:
+        if isinstance(h, logging.FileHandler) and os.path.abspath(h.baseFilename) == resolved:
+            return
     fh = logging.FileHandler(filename)
     fh.setLevel(level)
     fh.setFormatter(_fmt)
@@ -98,7 +106,7 @@ def _header_line(message: str, char: str) -> str:
     """Build a single decorated header line using char as padding."""
     if len(message) % 2 == 1:
         message += ' '
-    pad = (80 - len(message) - 2) // 2
+    pad = max(0, (80 - len(message) - 2) // 2)
     if message == '':
         return char * (pad * 2 + 2)
     return char * pad + ' ' + message + ' ' + char * pad

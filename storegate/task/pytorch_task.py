@@ -260,5 +260,11 @@ class PytorchTask(DLTask):
         if not isinstance(outputs, list):
             outputs = [outputs]
 
+        if len(outputs) != len(self._output_var_names):
+            raise ValueError(
+                f'Number of model outputs ({len(outputs)}) does not match '
+                f'output_var_names ({len(self._output_var_names)}).'
+            )
+
         for output_var_name, output in zip(self._output_var_names, outputs):
             self._storegate.add_data(output_var_name, output.detach().cpu().numpy(), 'test')

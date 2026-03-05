@@ -18,7 +18,15 @@ class AgentTask(Task):
         self._data_id: str | None = None
 
     def set_hps(self, params: dict[str, Any]) -> None:
-        """Set hyperparameters to this task."""
+        """Set hyperparameters to this task.
+
+        Each key maps to a task attribute ``_<key>``. For example, ``'data_id'``
+        updates ``_data_id`` and automatically calls ``storegate.set_data_id()``,
+        allowing each hyperparameter trial to operate on a different dataset.
+
+        Protected keys (``storegate``, ``ml``) and undefined attributes raise
+        ``AttributeError``.
+        """
         for key, value in params.items():
             if key in self._PROTECTED_KEYS:
                 raise AttributeError(f'{key} is not a valid hyperparameter.')

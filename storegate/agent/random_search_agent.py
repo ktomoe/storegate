@@ -11,11 +11,11 @@ class RandomSearchAgent(SearchAgent):
     """Agent randomly sampling hyperparameter combinations.
 
     Unlike GridSearchAgent which exhausts all combinations, RandomSearchAgent
-    draws ``n_iter`` random samples from the search space, which is useful when
+    draws ``num_iter`` random samples from the search space, which is useful when
     the grid is too large to enumerate.
 
     Args:
-        n_iter (int): Number of random hyperparameter combinations to sample.
+        num_iter (int): Number of random hyperparameter combinations to sample.
         seed (int or None): Random seed for reproducibility.
         **kwargs: Forwarded to SearchAgent.
 

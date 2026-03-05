@@ -74,6 +74,27 @@ def test_get_data_materializes_and_caches(db):
     assert db._cache[DATA_ID]['train']['x'] is cache_obj  # not re-concatenated
 
 
+def test_materialize_collapses_chunks_to_single_element(db):
+    """After get_data, the chunk list is collapsed to one element to free original arrays."""
+    db.add_data(DATA_ID, 'x', np.array([[1.0]]), 'train')
+    db.add_data(DATA_ID, 'x', np.array([[2.0]]), 'train')
+    db.add_data(DATA_ID, 'x', np.array([[3.0]]), 'train')
+    assert len(db._chunks[DATA_ID]['train']['x']) == 3
+
+    db.get_data(DATA_ID, 'x', 'train', None)
+    assert len(db._chunks[DATA_ID]['train']['x']) == 1
+
+
+def test_add_data_after_materialize_appends_correctly(db):
+    """Appending after materialization still produces the correct concatenated result."""
+    db.add_data(DATA_ID, 'x', np.array([[1.0], [2.0]]), 'train')
+    db.get_data(DATA_ID, 'x', 'train', None)  # materializes and collapses
+
+    db.add_data(DATA_ID, 'x', np.array([[3.0]]), 'train')
+    result = db.get_data(DATA_ID, 'x', 'train', None)
+    np.testing.assert_array_equal(result, [[1.0], [2.0], [3.0]])
+
+
 def test_add_data_invalidates_cache(db):
     """add_data after a get_data call must invalidate the cache."""
     db.add_data(DATA_ID, 'x', np.array([[1.0]]), 'train')
