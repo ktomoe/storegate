@@ -17,13 +17,16 @@ def dummy(*args: Any, **kwargs: Any) -> None:
 class EpochMetric:
     """Utility class to manage epoch metrics."""
     def __init__(self, metrics: list[str | Callable[..., Any]], ml: DLEnv) -> None:
-        self.metrics = metrics
         self.ml = ml
         self.total: int = 0
         self.buffs: list[Any] = []
+        valid: list[str | Callable[..., Any]] = []
         for metric in metrics:
             if isinstance(metric, str) and not hasattr(self, metric):
                 logger.warn(f"Unknown metric '{metric}' will be ignored.")
+            else:
+                valid.append(metric)
+        self.metrics = valid
 
     def __call__(self, batch_result: dict[str, Any]) -> dict[str, Any]:
         result: dict[str, Any] = {}

@@ -48,3 +48,7 @@ class HybridDatabase(Database):
 
     def get_metadata(self, data_id: str, phase: str) -> dict[str, Any]:
         return self._db[self._backend].get_metadata(data_id, phase)
+
+    def close(self) -> None:
+        for db in self._db.values():
+            db.close()

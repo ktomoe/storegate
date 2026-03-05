@@ -45,3 +45,7 @@ class Database(metaclass=ABCMeta):
         The dict contains: {'var_name': {'type': type of variable,
                                          'total_events': number of samples}
         """
+
+    @abstractmethod
+    def close(self) -> None:
+        """Release any resources held by the database."""

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import functools
+import re
 from contextlib import contextmanager
 from types import TracebackType
 from typing import Any, Callable, Generator, Iterator, TypeVar
@@ -69,23 +70,18 @@ class _VarAccessor:
         self._phase = phase
         self._var_name = var_name
 
-    def _normalize_index(self, item: int | slice) -> int | slice | None:
-        if self._phase == 'all' and item == slice(None, None, None):
-            return None
-        return item
-
     def __getitem__(self, item: int | slice) -> np.ndarray:
         if not isinstance(item, (int, slice)):
             raise NotImplementedError(f'item {item} is not supported')
         return self._storegate.get_data(
-            var_name=self._var_name, phase=self._phase, index=self._normalize_index(item)
+            var_name=self._var_name, phase=self._phase, index=item
         )
 
     def __setitem__(self, item: int | slice, data: Any) -> None:
         if not isinstance(item, (int, slice)):
             raise ValueError(f'item {item} must be int or slice')
         self._storegate.update_data(
-            var_name=self._var_name, data=data, phase=self._phase, index=self._normalize_index(item)
+            var_name=self._var_name, data=data, phase=self._phase, index=item
         )
 
 
@@ -99,6 +95,27 @@ def require_data_id(method: _F) -> _F:
             )
         return method(self, *args, **kwargs)
     return wrapper  # type: ignore[return-value]
+
+
+_VALID_IDENTIFIER = re.compile(r'^[a-zA-Z0-9_-]{1,128}$')
+
+
+def _validate_data_id(data_id: str) -> None:
+    """Raise ValueError if data_id contains invalid characters."""
+    if not isinstance(data_id, str) or not _VALID_IDENTIFIER.match(data_id):
+        raise ValueError(
+            f"Invalid data_id {data_id!r}. "
+            "Must be 1-128 characters: alphanumeric, underscore, or hyphen only."
+        )
+
+
+def _validate_var_name(var_name: str) -> None:
+    """Raise ValueError if var_name contains invalid characters."""
+    if not isinstance(var_name, str) or not _VALID_IDENTIFIER.match(var_name):
+        raise ValueError(
+            f"Invalid var_name {var_name!r}. "
+            "Must be 1-128 characters: alphanumeric, underscore, or hyphen only."
+        )
 
 
 def _validate_phase(phase: str, allow_all: bool = False) -> None:
@@ -138,7 +155,12 @@ class StoreGate:
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> bool:
+        self.close()
         return False
+
+    def close(self) -> None:
+        """Release resources held by the underlying databases."""
+        self._db.close()
 
     @require_data_id
     def __getitem__(self, item: str) -> _PhaseAccessor:
@@ -159,6 +181,7 @@ class StoreGate:
 
     def set_data_id(self, data_id: str) -> None:
         """Set the default ``data_id`` and initialize the zarr."""
+        _validate_data_id(data_id)
         self._data_id = data_id
         self._db.initialize(data_id)
 
@@ -196,8 +219,14 @@ class StoreGate:
 
     @require_data_id
     def add_data(self, var_name: str, data: Any, phase: str) -> None:
+        _validate_var_name(var_name)
         _validate_phase(phase)
         data = np.asarray(data)
+        if data.ndim == 0:
+            raise ValueError(
+                'data must be at least 1-dimensional. '
+                'Wrap scalar values in a list or array, e.g. np.array([value]).'
+            )
         self._db.add_data(self._data_id, var_name, data, phase)
         self._invalidate_compiled(phase)
 
@@ -225,6 +254,7 @@ class StoreGate:
     @require_data_id
     def update_data(self, var_name: str, data: Any, phase: str, index: int | slice | None = None) -> None:
         """Update data in storegate with given options."""
+        _validate_var_name(var_name)
         _validate_phase(phase)
         self._db.update_data(self._data_id, var_name, data, phase, index)
         self._metadata[self._data_id]['compiled'][self.get_backend()] = False
@@ -233,6 +263,7 @@ class StoreGate:
     @require_data_id
     def get_data(self, var_name: str, phase: str, index: int | slice | None = None) -> np.ndarray:
         """Retrieve data from storegate with given options."""
+        _validate_var_name(var_name)
         _validate_phase(phase)
         return self._db.get_data(self._data_id, var_name, phase, index)
 
@@ -240,6 +271,7 @@ class StoreGate:
     @require_data_id
     def delete_data(self, var_name: str, phase: str) -> None:
         """Delete data associated with var_names."""
+        _validate_var_name(var_name)
         _validate_phase(phase, allow_all=True)
         if phase == 'all':
             for iphase in const.PHASES:
@@ -261,7 +293,10 @@ class StoreGate:
     @require_data_id
     def copy_to_memory(self, var_name: str, phase: str, output_var_name: str | None = None) -> None:
         """Copy data from storage to memory."""
+        _validate_var_name(var_name)
         _validate_phase(phase)
+        if output_var_name is not None:
+            _validate_var_name(output_var_name)
         if output_var_name is None:
             output_var_name = var_name
 
@@ -277,7 +312,10 @@ class StoreGate:
     @require_data_id
     def copy_to_storage(self, var_name: str, phase: str, output_var_name: str | None = None) -> None:
         """Copy data from memory to storage."""
+        _validate_var_name(var_name)
         _validate_phase(phase)
+        if output_var_name is not None:
+            _validate_var_name(output_var_name)
         if output_var_name is None:
             output_var_name = var_name
 
@@ -291,12 +329,18 @@ class StoreGate:
 
 
     @require_data_id
-    def compile(self, show_info: bool = False) -> None:
+    def compile(self, show_info: bool = False, cross_backend: bool = False) -> None:
         """Check if registered data are valid.
 
         Validates that all variables within each phase have the same number of events.
         Note: consistency across phases (e.g. train vs valid) is intentionally not checked,
         as each phase may have a different number of events by design.
+
+        Args:
+            show_info (bool): Print a summary table after compilation.
+            cross_backend (bool): When True, also verify that any variable present in
+                both backends (zarr and numpy) has the same number of events.
+                Raises ValueError if a mismatch is found.
         """
 
         num_events: list[int | None] = []
@@ -325,8 +369,37 @@ class StoreGate:
         for phase, events in zip(const.PHASES, num_events):
             self._metadata[self._data_id]['sizes'][self.get_backend()][phase] = events
 
+        if cross_backend:
+            self._check_cross_backend_consistency()
+
         if show_info:
             self.show_info()
+
+    def _check_cross_backend_consistency(self) -> None:
+        """Verify that variables present in both backends agree on event counts.
+
+        Called from compile(cross_backend=True). Raises ValueError listing all
+        mismatches found across phases before aborting.
+        """
+        errors: list[str] = []
+        for phase in const.PHASES:
+            with self.using_backend('zarr'):
+                zarr_meta = self._db.get_metadata(self._data_id, phase)
+            with self.using_backend('numpy'):
+                numpy_meta = self._db.get_metadata(self._data_id, phase)
+
+            for var_name in sorted(set(zarr_meta) & set(numpy_meta)):
+                z = zarr_meta[var_name]['total_events']
+                n = numpy_meta[var_name]['total_events']
+                if z != n:
+                    errors.append(
+                        f"  '{var_name}' in '{phase}': zarr={z} events, numpy={n} events"
+                    )
+
+        if errors:
+            raise ValueError(
+                "Cross-backend inconsistency detected:\n" + "\n".join(errors)
+            )
 
 
     def _invalidate_compiled(self, phase: str) -> None:

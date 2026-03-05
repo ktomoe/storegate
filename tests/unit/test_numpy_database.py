@@ -17,7 +17,7 @@ def db():
 
 def test_initialize_creates_structure(db):
     for phase in ['train', 'valid', 'test']:
-        assert db._db[DATA_ID][phase] == {}
+        assert db._chunks[DATA_ID][phase] == {}
         assert db._metadata[DATA_ID][phase] == {}
 
 
@@ -25,14 +25,14 @@ def test_initialize_idempotent(db):
     db.initialize(DATA_ID)  # second call should not overwrite
     db.add_data(DATA_ID, 'x', np.array([[1.0]]), 'train')
     db.initialize(DATA_ID)  # should not clear existing data
-    assert 'x' in db._db[DATA_ID]['train']
+    assert 'x' in db._chunks[DATA_ID]['train']
 
 
 def test_add_data_new_var(db):
     data = np.array([[1.0, 2.0], [3.0, 4.0]])
     db.add_data(DATA_ID, 'x', data, 'train')
 
-    np.testing.assert_array_equal(db._db[DATA_ID]['train']['x'], data)
+    np.testing.assert_array_equal(db.get_data(DATA_ID, 'x', 'train', None), data)
     meta = db._metadata[DATA_ID]['train']['x']
     assert meta['backend'] == 'numpy'
     assert meta['type'] == 'float64'
@@ -47,8 +47,41 @@ def test_add_data_appends_to_existing(db):
     db.add_data(DATA_ID, 'x', data2, 'train')
 
     expected = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
-    np.testing.assert_array_equal(db._db[DATA_ID]['train']['x'], expected)
+    np.testing.assert_array_equal(db.get_data(DATA_ID, 'x', 'train', None), expected)
     assert db._metadata[DATA_ID]['train']['x']['total_events'] == 3
+
+
+def test_add_data_accumulates_chunks_without_concat(db):
+    """Chunks are stored as a list; concatenation is deferred until get_data."""
+    db.add_data(DATA_ID, 'x', np.array([[1.0]]), 'train')
+    db.add_data(DATA_ID, 'x', np.array([[2.0]]), 'train')
+    db.add_data(DATA_ID, 'x', np.array([[3.0]]), 'train')
+
+    assert len(db._chunks[DATA_ID]['train']['x']) == 3
+    assert db._cache[DATA_ID]['train']['x'] is None  # not yet materialized
+
+
+def test_get_data_materializes_and_caches(db):
+    """After get_data the cache is populated; a second call does not replace it."""
+    db.add_data(DATA_ID, 'x', np.array([[1.0]]), 'train')
+    db.add_data(DATA_ID, 'x', np.array([[2.0]]), 'train')
+
+    db.get_data(DATA_ID, 'x', 'train', None)
+    cache_obj = db._cache[DATA_ID]['train']['x']
+    assert cache_obj is not None
+
+    db.get_data(DATA_ID, 'x', 'train', None)
+    assert db._cache[DATA_ID]['train']['x'] is cache_obj  # not re-concatenated
+
+
+def test_add_data_invalidates_cache(db):
+    """add_data after a get_data call must invalidate the cache."""
+    db.add_data(DATA_ID, 'x', np.array([[1.0]]), 'train')
+    db.get_data(DATA_ID, 'x', 'train', None)  # populate cache
+    assert db._cache[DATA_ID]['train']['x'] is not None
+
+    db.add_data(DATA_ID, 'x', np.array([[2.0]]), 'train')
+    assert db._cache[DATA_ID]['train']['x'] is None  # invalidated
 
 
 def test_add_data_independent_phases(db):
@@ -88,8 +121,8 @@ def test_update_data_by_index(db):
     db.add_data(DATA_ID, 'x', data, 'train')
 
     db.update_data(DATA_ID, 'x', np.array([99.0, 99.0]), 'train', 0)
-    np.testing.assert_array_equal(db._db[DATA_ID]['train']['x'][0], [99.0, 99.0])
-    np.testing.assert_array_equal(db._db[DATA_ID]['train']['x'][1], data[1])
+    np.testing.assert_array_equal(db.get_data(DATA_ID, 'x', 'train', 0), [99.0, 99.0])
+    np.testing.assert_array_equal(db.get_data(DATA_ID, 'x', 'train', 1), data[1])
 
 
 def test_update_data_by_slice(db):
@@ -97,8 +130,8 @@ def test_update_data_by_slice(db):
     db.add_data(DATA_ID, 'x', data, 'train')
 
     db.update_data(DATA_ID, 'x', np.array([[9.0], [9.0]]), 'train', slice(0, 2))
-    np.testing.assert_array_equal(db._db[DATA_ID]['train']['x'][0], [9.0])
-    np.testing.assert_array_equal(db._db[DATA_ID]['train']['x'][2], [3.0])
+    np.testing.assert_array_equal(db.get_data(DATA_ID, 'x', 'train', 0), [9.0])
+    np.testing.assert_array_equal(db.get_data(DATA_ID, 'x', 'train', 2), [3.0])
 
 
 def test_update_data_all(db):
@@ -107,14 +140,24 @@ def test_update_data_all(db):
 
     new_data = np.array([[9.0], [9.0]])
     db.update_data(DATA_ID, 'x', new_data, 'train', None)
-    np.testing.assert_array_equal(db._db[DATA_ID]['train']['x'], new_data)
+    np.testing.assert_array_equal(db.get_data(DATA_ID, 'x', 'train', None), new_data)
+
+
+def test_update_data_collapses_chunks(db):
+    """After update_data the chunk list must be collapsed to a single element."""
+    db.add_data(DATA_ID, 'x', np.array([[1.0]]), 'train')
+    db.add_data(DATA_ID, 'x', np.array([[2.0]]), 'train')
+    assert len(db._chunks[DATA_ID]['train']['x']) == 2
+
+    db.update_data(DATA_ID, 'x', np.array([9.0]), 'train', 0)
+    assert len(db._chunks[DATA_ID]['train']['x']) == 1
 
 
 def test_delete_data(db):
     db.add_data(DATA_ID, 'x', np.array([[1.0]]), 'train')
     db.delete_data(DATA_ID, 'x', 'train')
 
-    assert 'x' not in db._db[DATA_ID]['train']
+    assert 'x' not in db._chunks[DATA_ID]['train']
     assert 'x' not in db._metadata[DATA_ID]['train']
 
 

@@ -132,7 +132,6 @@ class SearchAgent(Agent):
                             continue
 
                         if (process == 0) or (not process.is_alive()):
-                            time.sleep(0.05)
                             job_arg = jobs.pop(0)
                             pool[ii] = ctx.Process(target=self.execute_wrapper,
                                                    args=(queue, *job_arg, cuda_ids[ii]),

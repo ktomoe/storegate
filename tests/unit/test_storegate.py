@@ -39,6 +39,39 @@ def test_set_data_id(sg):
     assert sg.data_id == DATA_ID
 
 
+@pytest.mark.parametrize('valid_id', [
+    'abc',
+    'ABC',
+    'test_data',
+    'experiment-01',
+    'a' * 128,
+    'mix_AND-123',
+])
+def test_set_data_id_valid_values(sg, valid_id):
+    sg.set_data_id(valid_id)
+    assert sg.data_id == valid_id
+
+
+@pytest.mark.parametrize('invalid_id', [
+    '',
+    'a' * 129,
+    '../secret',
+    'a/b',
+    'hello world',
+    'tab\there',
+    'new\nline',
+    'semi;colon',
+])
+def test_set_data_id_invalid_values_raise(sg, invalid_id):
+    with pytest.raises(ValueError, match='Invalid data_id'):
+        sg.set_data_id(invalid_id)
+
+
+def test_init_with_invalid_data_id_raises(tmp_path):
+    with pytest.raises(ValueError, match='Invalid data_id'):
+        StoreGate(output_dir=str(tmp_path), mode='w', data_id='bad/id')
+
+
 def test_set_data_id_initializes_metadata(sg):
     sg.set_data_id(DATA_ID)
     assert DATA_ID in sg._metadata
@@ -254,6 +287,88 @@ def test_add_data_after_compile_resets_flag(sg_id):
 
     backend = sg_id.get_backend()
     assert sg_id._metadata[DATA_ID]['compiled'][backend] is False
+
+
+# ---------------------------------------------------------------------------
+# compile — cross_backend
+# ---------------------------------------------------------------------------
+
+def test_compile_cross_backend_default_false_does_not_check(sg_id):
+    """Default compile() ignores cross-backend differences."""
+    data = np.array([[1.0], [2.0]])
+    sg_id.add_data('x', data, phase='train')                      # zarr: 2 events
+    with sg_id.using_backend('numpy'):
+        sg_id.add_data('x', np.array([[9.0]]), phase='train')     # numpy: 1 event
+    sg_id.compile()  # should not raise (cross_backend=False)
+
+
+def test_compile_cross_backend_passes_when_no_common_vars(sg_id):
+    """Variables in only one backend are not compared."""
+    sg_id.add_data('x', np.array([[1.0], [2.0]]), phase='train')  # zarr only
+    with sg_id.using_backend('numpy'):
+        sg_id.add_data('y', np.array([[9.0]]), phase='train')      # numpy only
+    sg_id.compile(cross_backend=True)  # should not raise
+
+
+def test_compile_cross_backend_passes_when_counts_match(sg_id):
+    data = np.array([[1.0], [2.0]])
+    sg_id.add_data('x', data, phase='train')                      # zarr: 2
+    sg_id.copy_to_memory('x', phase='train')                      # numpy: 2
+    sg_id.compile(cross_backend=True)  # should not raise
+
+
+def test_compile_cross_backend_raises_on_count_mismatch(sg_id):
+    sg_id.add_data('x', np.array([[1.0], [2.0]]), phase='train')  # zarr: 2
+    with sg_id.using_backend('numpy'):
+        sg_id.add_data('x', np.array([[9.0]]), phase='train')     # numpy: 1
+    with pytest.raises(ValueError, match='Cross-backend inconsistency'):
+        sg_id.compile(cross_backend=True)
+
+
+def test_compile_cross_backend_error_contains_var_name(sg_id):
+    sg_id.add_data('score', np.array([[1.0], [2.0]]), phase='train')
+    with sg_id.using_backend('numpy'):
+        sg_id.add_data('score', np.array([[9.0]]), phase='train')
+    with pytest.raises(ValueError, match="'score'"):
+        sg_id.compile(cross_backend=True)
+
+
+def test_compile_cross_backend_error_contains_phase(sg_id):
+    sg_id.add_data('x', np.array([[1.0], [2.0]]), phase='valid')
+    with sg_id.using_backend('numpy'):
+        sg_id.add_data('x', np.array([[9.0]]), phase='valid')
+    with pytest.raises(ValueError, match="'valid'"):
+        sg_id.compile(cross_backend=True)
+
+
+def test_compile_cross_backend_error_contains_counts(sg_id):
+    sg_id.add_data('x', np.array([[1.0], [2.0], [3.0]]), phase='train')  # zarr: 3
+    with sg_id.using_backend('numpy'):
+        sg_id.add_data('x', np.array([[9.0]]), phase='train')             # numpy: 1
+    with pytest.raises(ValueError, match=r'zarr=3.*numpy=1|numpy=1.*zarr=3'):
+        sg_id.compile(cross_backend=True)
+
+
+def test_compile_cross_backend_reports_all_mismatches_at_once(sg_id):
+    """All mismatching variables are collected before raising."""
+    sg_id.add_data('x', np.array([[1.0], [2.0]]), phase='train')
+    sg_id.add_data('y', np.array([[3.0], [4.0]]), phase='train')
+    with sg_id.using_backend('numpy'):
+        sg_id.add_data('x', np.array([[9.0]]), phase='train')  # mismatch
+        sg_id.add_data('y', np.array([[8.0]]), phase='train')  # mismatch
+    with pytest.raises(ValueError) as exc_info:
+        sg_id.compile(cross_backend=True)
+    msg = str(exc_info.value)
+    assert "'x'" in msg
+    assert "'y'" in msg
+
+
+def test_compile_cross_backend_restores_backend_after_check(sg_id):
+    """Active backend must be unchanged after cross_backend check."""
+    sg_id.set_backend('numpy')
+    sg_id.add_data('x', np.array([[1.0]]), phase='train')
+    sg_id.compile(cross_backend=True)
+    assert sg_id.get_backend() == 'numpy'
 
 
 # ---------------------------------------------------------------------------

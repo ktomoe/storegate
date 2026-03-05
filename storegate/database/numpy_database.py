@@ -12,48 +12,67 @@ from storegate.database.database import Database
 class NumpyDatabase(Database):
     """Base class of Numpy database."""
     def __init__(self) -> None:
-        self._db: dict[str, Any] = {}
+        # data_id -> phase -> var_name -> list[np.ndarray]
+        self._chunks: dict[str, Any] = {}
+        # data_id -> phase -> var_name -> np.ndarray | None  (None = dirty, needs concat)
+        self._cache: dict[str, Any] = {}
         self._metadata: dict[str, Any] = {}
 
     def initialize(self, data_id: str) -> None:
-        if data_id not in self._db:
-            self._db[data_id] = {}
+        if data_id not in self._chunks:
+            self._chunks[data_id] = {}
+            self._cache[data_id] = {}
             self._metadata[data_id] = {}
             for phase in const.PHASES:
-                self._db[data_id][phase] = {}
+                self._chunks[data_id][phase] = {}
+                self._cache[data_id][phase] = {}
                 self._metadata[data_id][phase] = {}
 
-    def add_data(self, data_id: str, var_name: str, data: np.ndarray, phase: str) -> None:
-        if var_name in self._db[data_id][phase]:
-            tmp_data = self._db[data_id][phase][var_name]
-            concatenated = np.concatenate((tmp_data, data), axis=0)
-            self._db[data_id][phase][var_name] = concatenated
-            self._metadata[data_id][phase][var_name]['type'] = concatenated.dtype.name
-            self._metadata[data_id][phase][var_name]['shape'] = concatenated.shape[1:]
-            self._metadata[data_id][phase][var_name]['total_events'] += len(data)
+    def _materialize(self, data_id: str, var_name: str, phase: str) -> np.ndarray:
+        """Concatenate pending chunks into a single array, caching the result."""
+        if self._cache[data_id][phase][var_name] is None:
+            self._cache[data_id][phase][var_name] = np.concatenate(
+                self._chunks[data_id][phase][var_name], axis=0
+            )
+        return self._cache[data_id][phase][var_name]  # type: ignore[return-value]
 
+    def add_data(self, data_id: str, var_name: str, data: np.ndarray, phase: str) -> None:
+        if var_name in self._chunks[data_id][phase]:
+            self._chunks[data_id][phase][var_name].append(data)
+            self._cache[data_id][phase][var_name] = None  # invalidate
+            meta = self._metadata[data_id][phase][var_name]
+            meta['total_events'] += len(data)
+            meta['type'] = np.result_type(np.dtype(meta['type']), data.dtype).name
         else:
-            self._db[data_id][phase][var_name] = data
+            self._chunks[data_id][phase][var_name] = [data]
+            self._cache[data_id][phase][var_name] = None
             self._metadata[data_id][phase][var_name] = {
                 'backend': 'numpy',
                 'type': data.dtype.name,
                 'shape': data.shape[1:],
-                'total_events': len(data)
+                'total_events': len(data),
             }
 
     def update_data(self, data_id: str, var_name: str, data: np.ndarray, phase: str, index: int | slice | None) -> None:
-        self._db[data_id][phase][var_name][self._normalize_index(index)] = data
+        arr = self._materialize(data_id, var_name, phase)
+        arr[self._normalize_index(index)] = data
+        # Collapse to single chunk so the updated array is the source of truth
+        self._chunks[data_id][phase][var_name] = [arr]
 
     def get_data(self, data_id: str, var_name: str, phase: str, index: int | slice | None) -> np.ndarray:
-        return self._db[data_id][phase][var_name][self._normalize_index(index)]  # type: ignore[no-any-return]
+        return self._materialize(data_id, var_name, phase)[self._normalize_index(index)]  # type: ignore[no-any-return]
 
     def delete_data(self, data_id: str, var_name: str, phase: str) -> None:
-        if var_name not in self._db[data_id][phase]:
+        if var_name not in self._chunks[data_id][phase]:
             raise KeyError(f'"{var_name}" not found in {phase} phase.')
-        del self._db[data_id][phase][var_name]
+        del self._chunks[data_id][phase][var_name]
+        del self._cache[data_id][phase][var_name]
         del self._metadata[data_id][phase][var_name]
 
     def get_metadata(self, data_id: str, phase: str) -> dict[str, Any]:
         if data_id not in self._metadata:
             return {}
         return self._metadata[data_id][phase]  # type: ignore[no-any-return]
+
+    def close(self) -> None:
+        pass

@@ -41,9 +41,9 @@ class DLTask(AgentTask):
 
         self._ml = DLEnv()
 
-        self._input_var_names: list[str] | None = input_var_names if not isinstance(input_var_names, str) else [input_var_names]
-        self._output_var_names: list[str] | None = output_var_names if not isinstance(output_var_names, str) else [output_var_names]
-        self._true_var_names: list[str] | None = true_var_names if not isinstance(true_var_names, str) else [true_var_names]
+        self._input_var_names: _VarNames = input_var_names
+        self._output_var_names: _VarNames = output_var_names
+        self._true_var_names: _VarNames = true_var_names
 
         self._model: Any = model
         self._model_args: dict[str, Any] = model_args
@@ -56,7 +56,6 @@ class DLTask(AgentTask):
         self._num_epochs: int = num_epochs
         self._batch_size: int = batch_size
         self._preload: bool = preload
-        self._preloaded: bool = False
 
 
     def set_hps(self, params: dict[str, Any]) -> None:
@@ -89,11 +88,13 @@ class DLTask(AgentTask):
         self.compile()
 
         if self._preload:
-            if not self._preloaded:
-                for phase in const.PHASES:
-                    for var_name in (self._input_var_names or []) + (self._true_var_names or []):
+            for phase in const.PHASES:
+                for var_name in (self._input_var_names or []) + (self._true_var_names or []):
+                    if var_name in self._storegate.get_var_names(phase):
+                        with self._storegate.using_backend('numpy'):
+                            if var_name in self._storegate.get_var_names(phase):
+                                self._storegate.delete_data(var_name, phase=phase)
                         self._storegate.copy_to_memory(var_name, phase=phase)
-                self._preloaded = True
 
             with self._storegate.using_backend('numpy'):
                 self._storegate.compile()

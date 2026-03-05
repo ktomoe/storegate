@@ -71,3 +71,6 @@ class ZarrDatabase(Database):
                 'total_events': arr.shape[0]
             }
         return results
+
+    def close(self) -> None:
+        self._db.store.close()
