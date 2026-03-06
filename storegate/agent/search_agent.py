@@ -157,6 +157,7 @@ class SearchAgent(Agent):
         with concurrent.futures.ProcessPoolExecutor(
             max_workers=num_workers,
             mp_context=mp.get_context(self._context),
+            max_tasks_per_child=1,
         ) as executor, tqdm(**pbar_args) as pbar:
             # Fill the initial window (at most num_workers jobs in-flight).
             pending: set[concurrent.futures.Future[dict[str, Any]]] = {
