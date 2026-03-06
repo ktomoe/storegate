@@ -279,6 +279,15 @@ class StoreGate:
             This method is called automatically when using StoreGate as a
             context manager (``with StoreGate(...) as sg:``).
         """
+        numpy_chunks = self._db._db['numpy']._chunks
+        for data_id, phases in numpy_chunks.items():
+            for phase, vars_ in phases.items():
+                if vars_:
+                    var_list = ', '.join(vars_.keys())
+                    logger.debug(
+                        f"close(): discarding numpy data —"
+                        f" data_id='{data_id}', phase='{phase}', vars=[{var_list}]"
+                    )
         self._db.close()
 
     @require_data_id

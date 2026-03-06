@@ -28,13 +28,14 @@ class StoreGateDataset(tdata.Dataset):  # type: ignore[type-arg]
                 tensors at construction time.  Each ``__getitem__`` call then
                 performs a fast tensor index — strongly recommended when the
                 dataset fits in RAM, as lazy mode issues one zarr read per
-                sample per epoch.  Default: ``False``.
+                sample per epoch.  Default: ``True``.
 
         Note:
-            Use ``preload=True`` whenever the dataset fits in memory.
-            Lazy mode (``preload=False``) reads one sample at a time from
-            the zarr store, which is significantly slower for random-access
-            workloads typical of DataLoader with ``shuffle=True``.
+            The default ``preload=True`` is recommended for most use cases.
+            Set ``preload=False`` only when the dataset is too large to fit
+            in memory; lazy mode reads one sample at a time from the zarr
+            store, which is significantly slower for random-access workloads
+            typical of DataLoader with ``shuffle=True``.
         """
 
         self._storegate = storegate
