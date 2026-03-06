@@ -17,6 +17,25 @@ class StoreGateDataset(tdata.Dataset):  # type: ignore[type-arg]
                  input_var_names: str | list[str] | None = None,
                  true_var_names: str | list[str] | None = None,
                  preload: bool = False) -> None:
+        """Initialize the dataset.
+
+        Args:
+            storegate: StoreGate instance (must have been compiled).
+            phase: One of ``'train'``, ``'valid'``, or ``'test'``.
+            input_var_names: Variable name(s) used as model input.
+            true_var_names: Variable name(s) used as target/label.
+            preload (bool): If ``True``, all data is loaded into memory as
+                tensors at construction time.  Each ``__getitem__`` call then
+                performs a fast tensor index — strongly recommended when the
+                dataset fits in RAM, as lazy mode issues one zarr read per
+                sample per epoch.  Default: ``False``.
+
+        Note:
+            Use ``preload=True`` whenever the dataset fits in memory.
+            Lazy mode (``preload=False``) reads one sample at a time from
+            the zarr store, which is significantly slower for random-access
+            workloads typical of DataLoader with ``shuffle=True``.
+        """
 
         self._storegate = storegate
         self._phase = phase

@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from storegate import StoreGate
-from storegate.storegate import _PhaseAccessor, _VarAccessor
+from storegate.storegate import _AllPhaseAccessor, _PhaseAccessor, _VarAccessor
 
 
 DATA_ID = 'test_data'
@@ -27,6 +27,30 @@ def sg_id(tmp_path):
 
 def test_init_data_id_is_none(sg):
     assert sg.data_id is None
+
+
+# ---------------------------------------------------------------------------
+# output_dir validation
+# ---------------------------------------------------------------------------
+
+def test_init_invalid_mode_raises(tmp_path):
+    with pytest.raises(ValueError, match="Invalid mode"):
+        StoreGate(output_dir=str(tmp_path), mode='x')
+
+
+def test_init_empty_output_dir_raises(tmp_path):
+    with pytest.raises(ValueError, match="non-empty string"):
+        StoreGate(output_dir='', mode='w')
+
+
+def test_init_readonly_nonexistent_path_raises(tmp_path):
+    with pytest.raises(ValueError, match="does not exist"):
+        StoreGate(output_dir=str(tmp_path / 'missing'), mode='r')
+
+
+def test_init_write_nonexistent_parent_raises(tmp_path):
+    with pytest.raises(ValueError, match="Parent directory"):
+        StoreGate(output_dir=str(tmp_path / 'missing' / 'store'), mode='w')
 
 
 def test_init_with_data_id(tmp_path):
@@ -391,9 +415,42 @@ def test_getitem_returns_phase_accessor(sg_id):
     assert isinstance(accessor, _PhaseAccessor)
 
 
-def test_getitem_all_returns_phase_accessor(sg_id):
+def test_getitem_all_returns_all_phase_accessor(sg_id):
     accessor = sg_id['all']
-    assert isinstance(accessor, _PhaseAccessor)
+    assert isinstance(accessor, _AllPhaseAccessor)
+
+
+def test_all_phase_accessor_delitem_removes_from_all_phases(sg_id):
+    sg_id.add_data('x', np.array([[1.0]]), phase='train')
+    sg_id.add_data('x', np.array([[2.0]]), phase='valid')
+    del sg_id['all']['x']
+    assert 'x' not in sg_id.get_var_names('train')
+    assert 'x' not in sg_id.get_var_names('valid')
+
+
+def test_all_phase_accessor_getitem_raises(sg_id):
+    with pytest.raises(NotImplementedError, match="sg\\['all'\\]"):
+        _ = sg_id['all']['x']
+
+
+def test_all_phase_accessor_setitem_raises(sg_id):
+    with pytest.raises(NotImplementedError, match="sg\\['all'\\]"):
+        sg_id['all']['x'] = np.array([[1.0]])
+
+
+def test_all_phase_accessor_contains_raises(sg_id):
+    with pytest.raises(NotImplementedError, match="sg\\['all'\\]"):
+        _ = 'x' in sg_id['all']
+
+
+def test_all_phase_accessor_iter_raises(sg_id):
+    with pytest.raises(NotImplementedError, match="sg\\['all'\\]"):
+        _ = list(sg_id['all'])
+
+
+def test_all_phase_accessor_len_raises(sg_id):
+    with pytest.raises(NotImplementedError, match="sg\\['all'\\]"):
+        len(sg_id['all'])
 
 
 def test_getitem_invalid_phase_raises(sg_id):

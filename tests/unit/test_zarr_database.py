@@ -40,6 +40,38 @@ def test_add_data_appends_to_existing(zarr_db):
     np.testing.assert_array_equal(result, expected)
 
 
+def test_add_data_dtype_safe_upcast_succeeds(zarr_db):
+    # float64 existing + int32 incoming: promoted = float64 == existing → safe
+    data1 = np.array([[1.0, 2.0]], dtype=np.float64)
+    data2 = np.array([[3, 4]], dtype=np.int32)
+    zarr_db.add_data(DATA_ID, 'x', data1, 'train')
+    zarr_db.add_data(DATA_ID, 'x', data2, 'train')  # should not raise
+
+    result = zarr_db._db[DATA_ID]['train']['x'][:]
+    assert result.dtype == np.float64
+    assert result.shape[0] == 2
+
+
+def test_add_data_dtype_lossy_cast_raises(zarr_db):
+    # float32 existing + float64 incoming: promoted = float64 != float32 → ValueError
+    data1 = np.array([[1.0, 2.0]], dtype=np.float32)
+    data2 = np.array([[3.0, 4.0]], dtype=np.float64)
+    zarr_db.add_data(DATA_ID, 'x', data1, 'train')
+
+    with pytest.raises(ValueError, match='dtype mismatch'):
+        zarr_db.add_data(DATA_ID, 'x', data2, 'train')
+
+
+def test_add_data_dtype_lossy_cast_error_message(zarr_db):
+    # int32 existing + int64 incoming → promoted = int64 != int32 → raises
+    data1 = np.array([[1, 2]], dtype=np.int32)
+    data2 = np.array([[3, 4]], dtype=np.int64)
+    zarr_db.add_data(DATA_ID, 'x', data1, 'train')
+
+    with pytest.raises(ValueError, match='int32'):
+        zarr_db.add_data(DATA_ID, 'x', data2, 'train')
+
+
 def test_get_data_all(zarr_db):
     data = np.array([[1.0, 2.0], [3.0, 4.0]])
     zarr_db.add_data(DATA_ID, 'x', data, 'train')
@@ -127,7 +159,7 @@ def test_readonly_mode_can_read(tmp_path):
     np.testing.assert_array_equal(result, data)
 
 
-def test_readonly_mode_initialize_is_noop(tmp_path):
+def test_readonly_mode_initialize_validates_existence(tmp_path):
     db_w = ZarrDatabase(output_dir=str(tmp_path), chunk=100, mode='w')
     db_w.initialize(DATA_ID)
     db_w.add_data(DATA_ID, 'x', np.array([[1.0]]), 'train')

@@ -42,9 +42,14 @@ class NumpyDatabase(Database):
 
     def add_data(self, data_id: str, var_name: str, data: np.ndarray, phase: str) -> None:
         if var_name in self._chunks[data_id][phase]:
+            meta = self._metadata[data_id][phase][var_name]
+            if data.shape[1:] != meta['shape']:
+                raise ValueError(
+                    f"Shape mismatch for '{var_name}' in '{phase}': "
+                    f"expected {meta['shape']}, got {data.shape[1:]}"
+                )
             self._chunks[data_id][phase][var_name].append(data)
             self._cache[data_id][phase][var_name] = None  # invalidate
-            meta = self._metadata[data_id][phase][var_name]
             meta['total_events'] += len(data)
             promoted = np.result_type(np.dtype(meta['type']), data.dtype).name
             if promoted != meta['type']:
@@ -86,4 +91,6 @@ class NumpyDatabase(Database):
         return {k: dict(v) for k, v in self._metadata[data_id][phase].items()}
 
     def close(self) -> None:
-        pass
+        self._chunks.clear()
+        self._cache.clear()
+        self._metadata.clear()

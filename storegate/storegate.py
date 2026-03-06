@@ -4,6 +4,7 @@ from __future__ import annotations
 import functools
 import re
 from contextlib import contextmanager
+from pathlib import Path
 from types import TracebackType
 from typing import Any, Callable, Generator, Iterator, TypeVar
 
@@ -58,6 +59,60 @@ class _PhaseAccessor:
             raise ValueError('len() is supported only after compile')
         size = self._storegate._metadata[data_id]['sizes'][backend][self._phase]
         return 0 if size is None else size
+
+
+class _AllPhaseAccessor:
+    """Intermediate accessor returned by StoreGate['all'].
+
+    Only deletion is supported.  Use ``del sg['all']['x']`` to remove a
+    variable from every phase in a single call.
+
+    All other operations (read, write, iteration, membership test, len) raise
+    ``NotImplementedError`` because ``'all'`` has no single meaningful
+    semantics for those operations — use phase-specific accessors instead::
+
+        for name in sg['train']:   ...  # iterate one phase
+        'x' in sg['valid']             # membership in one phase
+        len(sg['test'])                # size of one phase
+    """
+
+    def __init__(self, storegate: StoreGate) -> None:
+        self._storegate = storegate
+
+    def __delitem__(self, item: str) -> None:
+        if not isinstance(item, str):
+            raise ValueError(f'item {item} must be str')
+        self._storegate.delete_data(item, phase='all')
+
+    def __getitem__(self, item: object) -> Any:
+        raise NotImplementedError(
+            "Read access via sg['all'][var] is not supported. "
+            "Use sg['train'][var], sg['valid'][var], or sg['test'][var] instead."
+        )
+
+    def __setitem__(self, item: object, data: Any) -> None:
+        raise NotImplementedError(
+            "Write access via sg['all'][var] = data is not supported. "
+            "Use sg['train'][var] = data (etc.) per phase instead."
+        )
+
+    def __contains__(self, item: object) -> bool:
+        raise NotImplementedError(
+            "Membership test via sg['all'] is not supported. "
+            "Use 'x' in sg['train'] (etc.) per phase instead."
+        )
+
+    def __iter__(self) -> Iterator[str]:
+        raise NotImplementedError(
+            "Iteration via sg['all'] is not supported. "
+            "Iterate over sg['train'], sg['valid'], or sg['test'] instead."
+        )
+
+    def __len__(self) -> int:
+        raise NotImplementedError(
+            "len(sg['all']) is not supported. "
+            "Use len(sg['train']), len(sg['valid']), or len(sg['test']) instead."
+        )
 
 
 class _VarAccessor:
@@ -126,6 +181,31 @@ def _validate_phase(phase: str, allow_all: bool = False) -> None:
         raise ValueError(f"Invalid phase '{phase}'. Must be one of {valid}.")
 
 
+def _validate_output_dir(output_dir: str, mode: str) -> None:
+    """Raise ValueError if output_dir is invalid for the given mode.
+
+    - ``mode='r'``: the path must already exist.
+    - ``mode='w'`` / ``mode='a'``: the parent directory must exist.
+    """
+    if not isinstance(output_dir, str) or not output_dir:
+        raise ValueError(
+            f"output_dir must be a non-empty string, got: {output_dir!r}"
+        )
+    if mode not in ('r', 'w', 'a'):
+        raise ValueError(
+            f"Invalid mode {mode!r}. Must be 'r', 'w', or 'a'."
+        )
+    path = Path(output_dir)
+    if mode == 'r' and not path.exists():
+        raise ValueError(
+            f"output_dir {output_dir!r} does not exist (mode='r')."
+        )
+    if mode in ('w', 'a') and not path.parent.exists():
+        raise ValueError(
+            f"Parent directory of output_dir does not exist: {path.parent!r}"
+        )
+
+
 class StoreGate:
     """Data management class."""
 
@@ -159,6 +239,8 @@ class StoreGate:
                 x = sg.get_data('x', phase='train')
         """
 
+        _validate_output_dir(output_dir, mode)
+        output_dir = str(Path(output_dir).resolve())
         self._db: HybridDatabase = HybridDatabase(output_dir=output_dir, mode=mode, chunk=chunk)
         self._data_id: str | None = None
         self._metadata: dict[str, Any] = {}
@@ -191,11 +273,17 @@ class StoreGate:
         self._db.close()
 
     @require_data_id
-    def __getitem__(self, item: str) -> _PhaseAccessor:
-        """Return a phase accessor for chained access: sg[phase][var_name][index]."""
-        if (item in const.PHASES) or (item == 'all'):
-            return _PhaseAccessor(self, item)
+    def __getitem__(self, item: str) -> _PhaseAccessor | _AllPhaseAccessor:
+        """Return a phase accessor for chained access: sg[phase][var_name][index].
 
+        For ``item='all'``, returns an :class:`_AllPhaseAccessor` that only
+        supports deletion (``del sg['all']['x']``).  All other operations on
+        that accessor raise ``NotImplementedError``.
+        """
+        if item in const.PHASES:
+            return _PhaseAccessor(self, item)
+        if item == 'all':
+            return _AllPhaseAccessor(self)
         raise NotImplementedError(f'item {item} is not supported')
 
 
@@ -211,9 +299,10 @@ class StoreGate:
         """Set the default ``data_id`` and initialize the zarr.
 
         Note:
-            After reopening an existing store, call ``compile()`` once per
-            ``data_id`` to populate in-memory size metadata before using
-            ``len()`` or other size-dependent operations.
+            Compiled state and phase sizes are automatically restored from the
+            zarr store if ``compile()`` was previously called and the store was
+            saved.  Re-calling ``compile()`` is only necessary when new data has
+            been added since the last ``compile()``.
         """
         _validate_data_id(data_id)
         self._data_id = data_id
@@ -222,6 +311,7 @@ class StoreGate:
         if data_id not in self._metadata:
             self._metadata[self._data_id] = {'compiled': {'zarr': False, 'numpy': False},
                                              'sizes': {'zarr': {}, 'numpy': {}}}
+            self._load_meta(data_id)
 
 
     @require_data_id
@@ -253,6 +343,24 @@ class StoreGate:
 
     @require_data_id
     def add_data(self, var_name: str, data: Any, phase: str) -> None:
+        """Append data for the given variable and phase.
+
+        Args:
+            var_name (str): Variable name to register.
+            data: Array-like data to append. Converted to ``np.ndarray`` internally.
+            phase (str): One of ``'train'``, ``'valid'``, or ``'test'``.
+
+        Note:
+            **dtype handling differs by backend:**
+
+            - **zarr** (disk): the array dtype is fixed at creation time.
+              Appending data whose dtype would require promotion raises
+              ``ValueError``.  Cast your data explicitly before calling
+              ``add_data``, e.g. ``data.astype(existing_dtype)``.
+            - **numpy** (memory): dtype promotion is performed automatically
+              (e.g. ``int32`` + ``float64`` → ``float64``) and a warning is
+              logged.  No data is lost.
+        """
         _validate_var_name(var_name)
         _validate_phase(phase)
         data = np.asarray(data)
@@ -412,6 +520,8 @@ class StoreGate:
         if cross_backend:
             self._check_cross_backend_consistency()
 
+        self._save_meta(self._data_id)
+
         if show_info:
             self.show_info()
 
@@ -442,6 +552,23 @@ class StoreGate:
             )
 
 
+    def _load_meta(self, data_id: str) -> None:
+        """Restore compiled state and sizes from zarr attrs (zarr backend only)."""
+        saved = self._db.load_meta_attrs(data_id)
+        if not saved:
+            return
+        meta = self._metadata[data_id]
+        meta['compiled']['zarr'] = saved.get('compiled', {}).get('zarr', False)
+        meta['sizes']['zarr'] = dict(saved.get('sizes', {}).get('zarr', {}))
+
+    def _save_meta(self, data_id: str) -> None:
+        """Persist compiled state and sizes to zarr attrs (zarr backend only)."""
+        meta = self._metadata[data_id]
+        self._db.save_meta_attrs(data_id, {
+            'compiled': {'zarr': meta['compiled']['zarr']},
+            'sizes':    {'zarr': meta['sizes']['zarr']},
+        })
+
     def _invalidate_compiled(self, phase: str) -> None:
         """Mark the current backend as not compiled and clear stale size entries."""
         backend = self.get_backend()
@@ -453,6 +580,8 @@ class StoreGate:
                 sizes.pop(iphase, None)
         else:
             sizes.pop(phase, None)
+        if backend == 'zarr':
+            self._save_meta(self._data_id)
 
     @require_data_id
     def show_info(self) -> None:

@@ -12,6 +12,11 @@ from storegate import logger
 def build_module(obj: Any, obj_args: dict[str, Any], modules: Any) -> Any:
     # str object
     if isinstance(obj, str):
+        if modules is None:
+            raise ValueError(
+                f"Cannot resolve '{obj}' from a string when no module namespace is provided. "
+                f"Pass the class directly instead (e.g. model=torch.nn.{obj})."
+            )
         return getattr(modules, obj)(**obj_args)
 
     # class object

@@ -51,6 +51,14 @@ class HybridDatabase(Database):
     def get_metadata(self, data_id: str, phase: str) -> dict[str, Any]:
         return self._db[self._backend].get_metadata(data_id, phase)
 
+    def load_meta_attrs(self, data_id: str) -> dict[str, Any]:
+        """Delegate to the zarr backend's load_meta_attrs."""
+        return self._db['zarr'].load_meta_attrs(data_id)
+
+    def save_meta_attrs(self, data_id: str, meta: dict[str, Any]) -> None:
+        """Delegate to the zarr backend's save_meta_attrs."""
+        self._db['zarr'].save_meta_attrs(data_id, meta)
+
     def close(self) -> None:
         for db in self._db.values():
             db.close()

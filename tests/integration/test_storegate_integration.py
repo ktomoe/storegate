@@ -239,3 +239,85 @@ def test_incremental_add_and_compile(sg):
     expected = np.concatenate([chunk1, chunk2], axis=0)
     np.testing.assert_array_equal(sg.get_data('x', 'train', None), expected)
     assert len(sg['train']) == 4
+
+
+# ---------------------------------------------------------------------------
+# Metadata persistence (zarr attrs)
+# ---------------------------------------------------------------------------
+
+def test_metadata_restored_after_reopen(tmp_path):
+    """After compile(), reopening the store allows len() without calling compile() again."""
+    sg = StoreGate(output_dir=str(tmp_path), mode='w')
+    sg.set_data_id(DATA_ID)
+    sg.add_data('x', np.array([[1.0], [2.0], [3.0]]), phase='train')
+    sg.add_data('x', np.array([[4.0]]), phase='valid')
+    sg.compile()
+
+    sg2 = StoreGate(output_dir=str(tmp_path), mode='r')
+    sg2.set_data_id(DATA_ID)
+
+    assert len(sg2['train']) == 3
+    assert len(sg2['valid']) == 1
+
+
+def test_metadata_restored_multi_data_id(tmp_path):
+    """Each data_id's metadata is independently restored in a store with multiple data_ids."""
+    sg = StoreGate(output_dir=str(tmp_path), mode='w')
+
+    sg.set_data_id('a')
+    sg.add_data('x', np.array([[1.0], [2.0]]), phase='train')
+    sg.compile()
+
+    sg.set_data_id('b')
+    sg.add_data('x', np.array([[3.0], [4.0], [5.0]]), phase='train')
+    sg.compile()
+
+    sg2 = StoreGate(output_dir=str(tmp_path), mode='r')
+    sg2.set_data_id('a')
+    assert len(sg2['train']) == 2
+
+    sg2.set_data_id('b')
+    assert len(sg2['train']) == 3
+
+
+def test_metadata_invalidated_after_add_data(tmp_path):
+    """add_data after compile() persists compiled=False so reopening correctly requires compile()."""
+    sg = StoreGate(output_dir=str(tmp_path), mode='w')
+    sg.set_data_id(DATA_ID)
+    sg.add_data('x', np.array([[1.0], [2.0]]), phase='train')
+    sg.compile()
+    sg.add_data('x', np.array([[3.0]]), phase='train')  # invalidates compiled flag
+
+    sg2 = StoreGate(output_dir=str(tmp_path), mode='r')
+    sg2.set_data_id(DATA_ID)
+
+    with pytest.raises(ValueError, match='compile'):
+        len(sg2['train'])
+
+
+def test_metadata_not_present_requires_compile(tmp_path):
+    """A store written without compile() still requires compile() after reopening."""
+    sg = StoreGate(output_dir=str(tmp_path), mode='w')
+    sg.set_data_id(DATA_ID)
+    sg.add_data('x', np.array([[1.0]]), phase='train')
+    # compile() not called
+
+    sg2 = StoreGate(output_dir=str(tmp_path), mode='r')
+    sg2.set_data_id(DATA_ID)
+
+    with pytest.raises(ValueError, match='compile'):
+        len(sg2['train'])
+
+
+def test_metadata_compiled_false_does_not_persist(tmp_path):
+    """Re-compiling after add_data saves compiled=True so len() works again after reopen."""
+    sg = StoreGate(output_dir=str(tmp_path), mode='w')
+    sg.set_data_id(DATA_ID)
+    sg.add_data('x', np.array([[1.0], [2.0]]), phase='train')
+    sg.compile()
+    sg.add_data('x', np.array([[3.0]]), phase='train')
+    sg.compile()  # recompile: saves compiled=True, size=3
+
+    sg2 = StoreGate(output_dir=str(tmp_path), mode='r')
+    sg2.set_data_id(DATA_ID)
+    assert len(sg2['train']) == 3

@@ -1,0 +1,50 @@
+name: Test
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  test:
+    name: "Python ${{ matrix.python-version }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install core dependencies
+        run: pip install ".[dev]"
+
+      - name: Run unit and integration tests (no PyTorch)
+        run: pytest tests/ --ignore=tests/unit/test_pytorch_task.py --ignore=tests/unit/test_pytorch_metrics.py --ignore=tests/unit/test_storegate_dataset.py -v
+
+  test-pytorch:
+    name: "PyTorch (Python 3.12)"
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install all dependencies (including PyTorch CPU)
+        run: pip install ".[dev,pytorch]" --extra-index-url https://download.pytorch.org/whl/cpu
+
+      - name: Run full test suite
+        run: pytest tests/ -v

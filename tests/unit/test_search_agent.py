@@ -42,6 +42,20 @@ class _FailingTask:
         pass
 
 
+class _SlowTask:
+    """Sleeps long enough to reliably trigger job_timeout."""
+    def set_hps(self, hps: dict) -> None:
+        pass
+
+    def execute(self) -> dict:
+        import time
+        time.sleep(2)
+        return {}
+
+    def finalize(self) -> None:
+        pass
+
+
 class _HpsRecordTask:
     """Records the full hps dict (including injected cuda_id) as result."""
     def __init__(self) -> None:
@@ -210,12 +224,21 @@ def test_execute_task_on_exception_has_no_result_key() -> None:
     assert 'result' not in result
 
 
-def test_execute_task_finalize_not_called_on_exception() -> None:
+def test_execute_task_finalize_always_called_on_exception() -> None:
     task = MagicMock()
     task.execute.side_effect = RuntimeError('fail')
 
     _agent().execute_task(task, hps={}, job_id=0)
-    task.finalize.assert_not_called()
+    task.finalize.assert_called_once()
+
+
+def test_execute_task_finalize_failure_does_not_propagate() -> None:
+    task = MagicMock()
+    task.execute.side_effect = RuntimeError('execute fail')
+    task.finalize.side_effect = RuntimeError('finalize fail')
+
+    result = _agent().execute_task(task, hps={}, job_id=0)
+    assert 'error' in result  # execute error recorded; finalize error does not override
 
 
 # ---------------------------------------------------------------------------
@@ -457,3 +480,55 @@ def test_execute_multiple_calls_reset_history() -> None:
     agent.execute()
     agent.execute()
     assert len(agent._history) == 1
+
+
+# ---------------------------------------------------------------------------
+# job_timeout — initialization
+# ---------------------------------------------------------------------------
+
+def test_job_timeout_default_is_none() -> None:
+    agent = _agent()
+    assert agent._job_timeout is None
+
+
+def test_job_timeout_stored_correctly() -> None:
+    agent = SearchAgent(task=MagicMock(), job_timeout=5.0)
+    assert agent._job_timeout == 5.0
+
+
+# ---------------------------------------------------------------------------
+# job_timeout — timeout fires
+# ---------------------------------------------------------------------------
+
+def test_job_timeout_cancels_slow_jobs() -> None:
+    """A job that never completes is cancelled and recorded as a timeout error."""
+    agent = SearchAgent(task=_SlowTask(), hps={'a': [1, 2]}, job_timeout=0.5)
+    agent.execute()
+    assert len(agent._history) == 2
+    for entry in agent._history:
+        assert 'error' in entry
+        assert 'TimeoutError' in entry['error']
+
+
+def test_job_timeout_error_contains_duration() -> None:
+    """The error message includes the configured timeout value."""
+    agent = SearchAgent(task=_SlowTask(), hps=None, job_timeout=0.5)
+    agent.execute()
+    assert '0.5' in agent._history[0]['error']
+
+
+def test_job_timeout_error_entry_has_hps_and_job_id() -> None:
+    """Timed-out entries preserve hps and job_id for traceability."""
+    agent = SearchAgent(task=_SlowTask(), hps={'lr': [1e-3]}, job_timeout=0.5)
+    agent.execute()
+    entry = agent._history[0]
+    assert 'hps' in entry
+    assert 'job_id' in entry
+    assert entry['hps'] == {'lr': 1e-3}
+
+
+def test_job_timeout_none_does_not_interfere_with_fast_jobs() -> None:
+    """job_timeout=None (default) lets fast jobs complete normally."""
+    agent = SearchAgent(task=_SumTask(), hps={'a': [1, 2]}, job_timeout=None)
+    agent.execute()
+    assert all('result' in r for r in agent._history)

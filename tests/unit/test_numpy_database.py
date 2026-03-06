@@ -208,3 +208,42 @@ def test_get_metadata_unknown_data_id():
     db = NumpyDatabase()
     metadata = db.get_metadata('unknown', 'train')
     assert metadata == {}
+
+
+def test_add_data_shape_mismatch_raises(db):
+    db.add_data(DATA_ID, 'x', np.array([[1.0, 2.0], [3.0, 4.0]]), 'train')
+    with pytest.raises(ValueError, match="Shape mismatch"):
+        db.add_data(DATA_ID, 'x', np.array([[5.0, 6.0, 7.0]]), 'train')
+
+
+def test_add_data_shape_mismatch_error_contains_expected_and_got(db):
+    db.add_data(DATA_ID, 'x', np.array([[1.0, 2.0]]), 'train')
+    with pytest.raises(ValueError, match=r"\(2,\).*\(3,\)|\(3,\).*\(2,\)"):
+        db.add_data(DATA_ID, 'x', np.array([[5.0, 6.0, 7.0]]), 'train')
+
+
+def test_add_data_shape_mismatch_does_not_corrupt_existing_data(db):
+    data = np.array([[1.0, 2.0], [3.0, 4.0]])
+    db.add_data(DATA_ID, 'x', data, 'train')
+    try:
+        db.add_data(DATA_ID, 'x', np.array([[5.0, 6.0, 7.0]]), 'train')
+    except ValueError:
+        pass
+    result = db.get_data(DATA_ID, 'x', 'train', None)
+    np.testing.assert_array_equal(result, data)
+    assert db._metadata[DATA_ID]['train']['x']['total_events'] == 2
+
+
+def test_add_data_matching_shape_does_not_raise(db):
+    db.add_data(DATA_ID, 'x', np.array([[1.0, 2.0]]), 'train')
+    db.add_data(DATA_ID, 'x', np.array([[3.0, 4.0], [5.0, 6.0]]), 'train')
+    assert db._metadata[DATA_ID]['train']['x']['total_events'] == 3
+
+
+def test_close_clears_all_internal_state(db):
+    db.add_data(DATA_ID, 'x', np.array([[1.0]]), 'train')
+    db.close()
+
+    assert db._chunks == {}
+    assert db._cache == {}
+    assert db._metadata == {}

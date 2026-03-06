@@ -46,6 +46,21 @@ class Database(metaclass=ABCMeta):
                                          'total_events': number of samples}
         """
 
+    def load_meta_attrs(self, data_id: str) -> dict[str, Any]:
+        """Load persisted metadata for the given data_id.
+
+        Returns an empty dict by default (in-memory backends have no persistence).
+        Override in backends that support metadata persistence (e.g. zarr).
+        """
+        return {}
+
+    def save_meta_attrs(self, data_id: str, meta: dict[str, Any]) -> None:
+        """Persist metadata for the given data_id.
+
+        No-op by default (in-memory backends have no persistence).
+        Override in backends that support metadata persistence (e.g. zarr).
+        """
+
     @abstractmethod
     def close(self) -> None:
         """Release any resources held by the database."""

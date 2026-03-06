@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import concurrent.futures
-import copy
 import json
 import multiprocessing as mp
 from pathlib import Path
 from typing import Any
 from tqdm import tqdm
-from itertools import product
+from itertools import product, islice
 
 from storegate import logger
 from storegate.agent import Agent
@@ -21,7 +20,8 @@ class SearchAgent(Agent):
                  num_trials: int | None = None,
                  cuda_ids: list[int] | None = None,
                  disable_tqdm: bool = True,
-                 json_dump: str | None = None) -> None:
+                 json_dump: str | None = None,
+                 job_timeout: float | None = None) -> None:
         """Initialize search agent.
 
         Args:
@@ -33,6 +33,10 @@ class SearchAgent(Agent):
                 The number of concurrent processes equals ``len(cuda_ids)``.
             disable_tqdm (bool): If True, suppress the tqdm progress bar.
             json_dump (str or None): File path to dump the result history as JSON.
+            job_timeout (float or None): Maximum seconds to wait for any pending job to
+                complete.  If no job finishes within this window, all remaining pending
+                jobs are cancelled and a ``TimeoutError`` is recorded in their result
+                entries.  ``None`` (default) means wait indefinitely.
         """
         if isinstance(cuda_ids, int):
             raise TypeError(
@@ -46,6 +50,7 @@ class SearchAgent(Agent):
         self._cuda_ids = cuda_ids
         self._disable_tqdm = disable_tqdm
         self._json_dump: Path | None = self._validate_json_dump(json_dump)
+        self._job_timeout = job_timeout
 
         self._context = 'spawn'
         self._history: list[dict[str, Any]] = []
@@ -81,6 +86,13 @@ class SearchAgent(Agent):
         return [dict(zip(keys, value)) for value in product(*values)]
 
     def execute(self) -> None:
+        """Run all hyperparameter jobs and collect results into ``_history``.
+
+        Note:
+            Each call to ``execute()`` **resets** the result history.
+            Previous results are discarded.  Call ``finalize()`` before
+            calling ``execute()`` again if you need to preserve them.
+        """
         self._history = []
         args: list[list[Any]] = []
 
@@ -106,37 +118,107 @@ class SearchAgent(Agent):
     def execute_pool_jobs(self, args: list[list[Any]]) -> None:
         """(expert method) Execute multiprocessing pool jobs.
 
-        Uses ``concurrent.futures.ProcessPoolExecutor`` with ``as_completed``
-        for event-driven result collection — no busy-wait, no TOCTOU.
-        Results are appended to ``self._history`` as each job finishes.
-        """
-        jobs = copy.deepcopy(args)
+        Uses a sliding-window submission strategy: at most ``num_workers``
+        futures are in-flight at any time.  A new job is submitted only after
+        a running job completes, so memory usage stays proportional to the
+        worker count rather than the total number of jobs.
 
+        If ``job_timeout`` was set at construction, each call to
+        ``concurrent.futures.wait`` is bounded by that duration.  When the
+        timeout expires with no completed jobs, all remaining pending jobs are
+        cancelled and a ``TimeoutError`` entry is appended to ``_history`` for
+        each cancelled job.
+        """
         # cuda_ids=None means use the task's own device; run with a single worker.
         cuda_ids = self._cuda_ids if self._cuda_ids is not None else [None]
-        num_jobs = len(jobs)
+        num_jobs = len(args)
         num_workers = len(cuda_ids)
 
         pbar_args = dict(ncols=80, total=num_jobs, disable=self._disable_tqdm)
 
-        futures: dict[concurrent.futures.Future[dict[str, Any]], None] = {}
+        # Maps each future back to its original job_arg so we can build a
+        # meaningful error record if the future is cancelled due to timeout.
+        future_to_arg: dict[concurrent.futures.Future[dict[str, Any]], list[Any]] = {}
+
+        def _submit(
+            executor: concurrent.futures.ProcessPoolExecutor,
+            ii: int,
+            job_arg: list[Any],
+        ) -> concurrent.futures.Future[dict[str, Any]]:
+            task, hps, job_id, trial_id = job_arg
+            cuda_id = cuda_ids[ii % num_workers]
+            if cuda_id is not None:
+                hps = dict(hps)
+                hps['cuda_id'] = cuda_id
+            future = executor.submit(self.execute_task, task, hps, job_id, trial_id)
+            future_to_arg[future] = job_arg
+            return future
+
+        args_iter = iter(enumerate(args))
+
         with concurrent.futures.ProcessPoolExecutor(
             max_workers=num_workers,
             mp_context=mp.get_context(self._context),
         ) as executor, tqdm(**pbar_args) as pbar:
-            for ii, job_arg in enumerate(jobs):
-                task, hps, job_id, trial_id = job_arg
-                cuda_id = cuda_ids[ii % num_workers]
-                if cuda_id is not None:
-                    hps = dict(hps)
-                    hps['cuda_id'] = cuda_id
-                futures[executor.submit(self.execute_task, task, hps, job_id, trial_id)] = None
+            # Fill the initial window (at most num_workers jobs in-flight).
+            pending: set[concurrent.futures.Future[dict[str, Any]]] = {
+                _submit(executor, ii, job_arg)
+                for ii, job_arg in islice(args_iter, num_workers)
+            }
 
-            for future in concurrent.futures.as_completed(futures):
-                self._history.append(future.result())
-                pbar.update(1)
-                if self._disable_tqdm:
-                    logger.info(f'completed process ({len(self._history)}/{num_jobs})')
+            while pending:
+                done, pending = concurrent.futures.wait(
+                    pending,
+                    timeout=self._job_timeout,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+
+                if not done:
+                    # Timeout: no job finished within job_timeout seconds.
+                    # Cancel and record all futures currently in-flight.
+                    for future in list(pending):
+                        future.cancel()
+                        _, hps, job_id, trial_id = future_to_arg.pop(future)
+                        error_msg = (
+                            f'TimeoutError: job did not complete within {self._job_timeout}s'
+                        )
+                        self._history.append({
+                            'hps': hps,
+                            'job_id': job_id,
+                            'trial_id': trial_id,
+                            'error': error_msg,
+                        })
+                        logger.error(f'Job {job_id} (trial {trial_id}) timed out after {self._job_timeout}s')
+                        pbar.update(1)
+                    # Also record timeout for jobs that were never submitted
+                    # (still waiting in the sliding-window queue).
+                    for _, job_arg in args_iter:
+                        _, hps, job_id, trial_id = job_arg
+                        error_msg = (
+                            f'TimeoutError: job did not complete within {self._job_timeout}s'
+                        )
+                        self._history.append({
+                            'hps': hps,
+                            'job_id': job_id,
+                            'trial_id': trial_id,
+                            'error': error_msg,
+                        })
+                        logger.error(f'Job {job_id} (trial {trial_id}) timed out after {self._job_timeout}s')
+                        pbar.update(1)
+                    break
+
+                for future in done:
+                    future_to_arg.pop(future, None)
+                    self._history.append(future.result())
+                    pbar.update(1)
+                    if self._disable_tqdm:
+                        logger.info(f'completed process ({len(self._history)}/{num_jobs})')
+                    # A slot is free — submit the next job immediately.
+                    try:
+                        ii, job_arg = next(args_iter)
+                        pending.add(_submit(executor, ii, job_arg))
+                    except StopIteration:
+                        pass
 
 
     def execute_task(
@@ -156,9 +238,13 @@ class SearchAgent(Agent):
         try:
             task.set_hps(hps)
             result['result'] = task.execute()
-            task.finalize()
         except Exception as e:
             result['error'] = f'{type(e).__name__}: {e}'
             logger.error(f'Job {job_id} (trial {trial_id}) failed: {result["error"]}')
+        finally:
+            try:
+                task.finalize()
+            except Exception as e:
+                logger.error(f'Job {job_id} (trial {trial_id}) finalize failed: {type(e).__name__}: {e}')
 
         return result

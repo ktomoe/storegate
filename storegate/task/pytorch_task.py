@@ -150,11 +150,14 @@ class PytorchTask(DLTask):
 
     def predict(self) -> dict[str, Any]:
         """Predict and upload outputs to storegate."""
+        deleted = False
         if self._output_var_names is not None:
             for var_name in self._output_var_names:
                 if var_name in self._storegate.get_var_names('test'):
                     self._storegate.delete_data(var_name, 'test')
-        self._storegate.compile()
+                    deleted = True
+        if deleted:
+            self._storegate.compile()
 
         self._ml.model.eval()
         dataloader = self.get_dataloader('test')

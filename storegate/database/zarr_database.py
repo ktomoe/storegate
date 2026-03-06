@@ -38,6 +38,17 @@ class ZarrDatabase(Database):
         db = self._db[data_id][phase]
 
         if var_name in db.array_keys():
+            existing_dtype = db[var_name].dtype
+            if data.dtype != existing_dtype:
+                promoted = np.result_type(existing_dtype, data.dtype)
+                if promoted != existing_dtype:
+                    raise ValueError(
+                        f"dtype mismatch for '{var_name}' in '{phase}': "
+                        f"existing={existing_dtype}, incoming={data.dtype.name}. "
+                        f"Appending would require a lossy cast to {existing_dtype} "
+                        f"(safe promotion would be {promoted.name}). "
+                        f"Cast your data to {existing_dtype} explicitly before adding."
+                    )
             db[var_name].append(data)
         else:
             shape = data.shape
@@ -71,6 +82,18 @@ class ZarrDatabase(Database):
                 'total_events': arr.shape[0]
             }
         return results
+
+    def load_meta_attrs(self, data_id: str) -> dict[str, Any]:
+        """Load persisted metadata from the attrs of the data_id group."""
+        if data_id not in self._db.group_keys():
+            return {}
+        return dict(self._db[data_id].attrs.get('_storegate_meta', {}))
+
+    def save_meta_attrs(self, data_id: str, meta: dict[str, Any]) -> None:
+        """Persist metadata to the attrs of the data_id group. No-op in read-only mode."""
+        if self._mode == 'r':
+            return
+        self._db[data_id].attrs['_storegate_meta'] = meta
 
     def close(self) -> None:
         self._db.store.close()

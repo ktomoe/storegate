@@ -1,4 +1,4 @@
-"""Unit tests for PytorchTask._output_to_storegate."""
+"""Unit tests for PytorchTask._output_to_storegate and pytorch_util.build_module."""
 from __future__ import annotations
 
 import pytest
@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, call
 torch = pytest.importorskip('torch')
 
 from storegate.task.pytorch_task import PytorchTask
+from storegate.task.pytorch.pytorch_util import build_module
 
 
 # ---------------------------------------------------------------------------
@@ -101,3 +102,87 @@ def test_output_to_storegate_mismatch_does_not_write_partial_data():
     with pytest.raises(ValueError):
         task._output_to_storegate([make_tensor(1.0)])
     task._storegate.add_data.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# build_module — string obj with modules=None raises ValueError
+# ---------------------------------------------------------------------------
+
+def test_build_module_string_with_none_modules_raises_value_error():
+    with pytest.raises(ValueError, match="'Linear'"):
+        build_module('Linear', {}, None)
+
+
+def test_build_module_string_with_none_modules_error_mentions_class():
+    with pytest.raises(ValueError, match='class'):
+        build_module('Linear', {}, None)
+
+
+def test_build_module_string_with_none_modules_error_mentions_torch():
+    with pytest.raises(ValueError, match='torch'):
+        build_module('Linear', {}, None)
+
+
+def test_build_module_string_with_valid_modules_succeeds():
+    import torch.nn as nn
+    model = build_module('Linear', {'in_features': 2, 'out_features': 1}, nn)
+    assert isinstance(model, nn.Linear)
+
+
+def test_build_module_class_with_none_modules_succeeds():
+    import torch.nn as nn
+    model = build_module(nn.Linear, {'in_features': 2, 'out_features': 1}, None)
+    assert isinstance(model, nn.Linear)
+
+
+# ---------------------------------------------------------------------------
+# DLTask.set_hps — empty suffix validation
+# ---------------------------------------------------------------------------
+
+def make_dl_task():
+    """Return a minimal DLTask with mocked storegate."""
+    from storegate.task.dl_task import DLTask
+    task = DLTask.__new__(DLTask)
+    task._storegate = MagicMock()
+    task._data_id = None
+    task._model_args = {}
+    task._optimizer_args = {}
+    task._loss_args = {}
+    task._PROTECTED_KEYS = frozenset({'storegate', 'ml'})
+    return task
+
+
+def test_set_hps_model_empty_suffix_raises():
+    task = make_dl_task()
+    with pytest.raises(ValueError, match="model__"):
+        task.set_hps({'model__': 64})
+
+
+def test_set_hps_optimizer_empty_suffix_raises():
+    task = make_dl_task()
+    with pytest.raises(ValueError, match="optimizer__"):
+        task.set_hps({'optimizer__': 1e-3})
+
+
+def test_set_hps_loss_empty_suffix_raises():
+    task = make_dl_task()
+    with pytest.raises(ValueError, match="loss__"):
+        task.set_hps({'loss__': 0.1})
+
+
+def test_set_hps_model_valid_suffix_sets_arg():
+    task = make_dl_task()
+    task.set_hps({'model__hidden': 128})
+    assert task._model_args['hidden'] == 128
+
+
+def test_set_hps_optimizer_valid_suffix_sets_arg():
+    task = make_dl_task()
+    task.set_hps({'optimizer__lr': 1e-4})
+    assert task._optimizer_args['lr'] == 1e-4
+
+
+def test_set_hps_loss_valid_suffix_sets_arg():
+    task = make_dl_task()
+    task.set_hps({'loss__weight': 0.5})
+    assert task._loss_args['weight'] == 0.5

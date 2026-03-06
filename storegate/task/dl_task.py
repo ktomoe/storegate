@@ -26,6 +26,15 @@ class DLTask(AgentTask):
                  batch_size: int = 64,
                  preload: bool = False,
                  **kwargs: Any):
+        """Initialize a DL task.
+
+        Args:
+            preload (bool): If ``True``, input and label variables are copied
+                from the zarr store into memory before training begins.
+                This avoids per-sample zarr reads during each epoch and is
+                strongly recommended when the dataset fits in RAM.
+                Default: ``False``.
+        """
 
         super().__init__(**kwargs)
 
@@ -62,13 +71,22 @@ class DLTask(AgentTask):
         for key, value in params.items():
 
             if key.startswith('model__'):
-                self._model_args[key.replace('model__', '')] = value
+                suffix = key.removeprefix('model__')
+                if not suffix:
+                    raise ValueError("Hyperparameter key 'model__' has an empty suffix. Use 'model__<arg_name>'.")
+                self._model_args[suffix] = value
 
             elif key.startswith('optimizer__'):
-                self._optimizer_args[key.replace('optimizer__', '')] = value
+                suffix = key.removeprefix('optimizer__')
+                if not suffix:
+                    raise ValueError("Hyperparameter key 'optimizer__' has an empty suffix. Use 'optimizer__<arg_name>'.")
+                self._optimizer_args[suffix] = value
 
             elif key.startswith('loss__'):
-                self._loss_args[key.replace('loss__', '')] = value
+                suffix = key.removeprefix('loss__')
+                if not suffix:
+                    raise ValueError("Hyperparameter key 'loss__' has an empty suffix. Use 'loss__<arg_name>'.")
+                self._loss_args[suffix] = value
 
             else:
                 if key in self._PROTECTED_KEYS:
@@ -82,14 +100,23 @@ class DLTask(AgentTask):
             self._storegate.set_data_id(self._data_id)
 
     def execute(self) -> dict[str, Any]:
-        """Execute a task."""
+        """Execute a task.
+
+        Note:
+            When ``preload=True``, model predictions written via
+            ``output_var_names`` are stored in the numpy (memory) backend.
+            To persist them to disk, call
+            ``storegate.copy_to_storage(var_name, phase='test')``
+            after ``execute()`` returns.
+        """
 
         self.compile()
 
         if self._preload:
             for phase in const.PHASES:
                 for var_name in (self._input_var_names or []) + (self._true_var_names or []):
-                    zarr_vars = self._storegate.get_var_names(phase)  # zarr backend
+                    with self._storegate.using_backend('zarr'):
+                        zarr_vars = self._storegate.get_var_names(phase)
                     if var_name not in zarr_vars:
                         continue
                     with self._storegate.using_backend('numpy'):
