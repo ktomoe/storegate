@@ -226,6 +226,12 @@ def table(
 def log_call(func: _F) -> _F:
     """Show the header and footer indicating start and end algorithm.
 
+    Note:
+        This decorator is intended for **instance methods** only.
+        The first argument of the decorated function is assumed to be ``self``
+        (a class instance).  Applying it to a plain function will treat the
+        first positional argument as the instance, producing incorrect output.
+
     Examples:
         >>> from storegate import logger
         >>>

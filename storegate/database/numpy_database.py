@@ -89,6 +89,15 @@ class NumpyDatabase(Database):
         return {k: dict(v) for k, v in self._metadata[data_id][phase].items()}
 
     def close(self) -> None:
+        """Release all in-memory data held by this database.
+
+        Warning:
+            This operation is **destructive and irreversible**.  All data
+            stored in the numpy (memory) backend — including every chunk,
+            cached array, and metadata entry — is permanently discarded.
+            Any data that has not been copied to the zarr (disk) backend via
+            ``StoreGate.copy_to_storage()`` will be lost.
+        """
         self._chunks.clear()
         self._cache.clear()
         self._metadata.clear()

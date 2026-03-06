@@ -207,8 +207,14 @@ class SearchAgent(Agent):
                     break
 
                 for future in done:
-                    future_to_arg.pop(future, None)
-                    self._history.append(future.result())
+                    job_arg = future_to_arg.pop(future, None)
+                    try:
+                        self._history.append(future.result())
+                    except Exception as e:
+                        _, hps, job_id, trial_id = job_arg if job_arg is not None else (None, {}, -1, None)
+                        error_msg = f'{type(e).__name__}: {e}'
+                        self._history.append({'hps': hps, 'job_id': job_id, 'trial_id': trial_id, 'error': error_msg})
+                        logger.error(f'Job {job_id} (trial {trial_id}) raised in worker: {error_msg}')
                     pbar.update(1)
                     if self._disable_tqdm:
                         logger.info(f'completed process ({len(self._history)}/{num_jobs})')

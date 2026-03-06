@@ -61,7 +61,10 @@ class PytorchTask(DLTask):
     def compile_model(self) -> None:
         """Compile model."""
         if self._model is None:
-            return
+            raise ValueError(
+                'model is required. Pass a class, instance, or string name via model=..., '
+                'or override step_model() in a subclass.'
+            )
 
         if self._is_gpu and (not torch.cuda.is_available()):
             raise ValueError(f'{self._device} is not available')
@@ -90,7 +93,10 @@ class PytorchTask(DLTask):
     def compile_loss(self) -> None:
         """Compile loss."""
         if self._loss is None:
-            return
+            raise ValueError(
+                'loss is required. Pass a class, instance, or string name via loss=..., '
+                'or override step_loss() in a subclass.'
+            )
 
         self._ml.loss = util.build_module(self._loss, self._loss_args, tl)
         self._ml.loss = self._ml.loss.to(self._device)
@@ -156,6 +162,10 @@ class PytorchTask(DLTask):
                     deleted = True
         if deleted:
             self._storegate.compile()
+
+        if not self._storegate.get_var_names('test'):
+            logger.warn("predict() skipped: no variables found in the 'test' phase.")
+            return {'test': {}}
 
         self._ml.model.eval()
         dataloader = self.get_dataloader('test')

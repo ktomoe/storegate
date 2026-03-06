@@ -25,7 +25,7 @@ def build_module(obj: Any, obj_args: dict[str, Any], modules: Any) -> Any:
     else:
         if obj_args != {}:
             logger.warn('instance object is given but args is also provided')
-        return copy.copy(obj)
+        return copy.deepcopy(obj)
 
 
 def inputs_size(inputs: torch.Tensor | list[Any] | Any) -> int:

@@ -11,10 +11,6 @@ if TYPE_CHECKING:
     from storegate.task.dl_env import DLEnv
 
 
-def dummy(*args: Any, **kwargs: Any) -> None:
-    return None
-
-
 class EpochMetric:
     """Utility class to manage epoch metrics."""
     def __init__(self, metrics: list[str | Callable[..., Any]], ml: DLEnv) -> None:
@@ -25,6 +21,8 @@ class EpochMetric:
         for metric in metrics:
             if isinstance(metric, str) and not hasattr(self, metric):
                 logger.warn(f"Unknown metric '{metric}' will be ignored.")
+            elif metric == 'lr' and ml.optimizer is None:
+                logger.warn("Metric 'lr' requires an optimizer; it will be ignored.")
             else:
                 valid.append(metric)
         self.metrics = valid
@@ -36,7 +34,7 @@ class EpochMetric:
 
         for ii, metric in enumerate(self.metrics):
             if isinstance(metric, str):
-                metric_fn = getattr(self, metric, dummy)
+                metric_fn = getattr(self, metric)
             else:
                 metric_fn = metric
                 metric = metric_fn.__name__

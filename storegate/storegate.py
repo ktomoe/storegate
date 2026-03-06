@@ -270,7 +270,15 @@ class StoreGate:
         return False
 
     def close(self) -> None:
-        """Release resources held by the underlying databases."""
+        """Release resources held by the underlying databases.
+
+        Warning:
+            Any data stored **only** in the numpy (memory) backend is
+            permanently discarded.  Persist it first with
+            ``copy_to_storage()`` if you need to keep it on disk.
+            This method is called automatically when using StoreGate as a
+            context manager (``with StoreGate(...) as sg:``).
+        """
         self._db.close()
 
     @require_data_id
@@ -399,6 +407,7 @@ class StoreGate:
         """Update data in storegate with given options."""
         _validate_var_name(var_name)
         _validate_phase(phase)
+        data = np.asarray(data)
         self._db.update_data(self._data_id, var_name, data, phase, index)
         self._metadata[self._data_id]['compiled'][self.get_backend()] = False
 

@@ -16,7 +16,7 @@ class StoreGateDataset(tdata.Dataset):  # type: ignore[type-arg]
                  phase: str,
                  input_var_names: str | list[str] | None = None,
                  true_var_names: str | list[str] | None = None,
-                 preload: bool = False) -> None:
+                 preload: bool = True) -> None:
         """Initialize the dataset.
 
         Args:
