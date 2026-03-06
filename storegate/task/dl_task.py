@@ -1,12 +1,10 @@
-from __future__ import annotations
-
 from typing import Any
 
 from storegate import logger, const
 from storegate.task.agent_task import AgentTask
 from storegate.task.dl_env import DLEnv
 
-_VarNames = str | list[str] | None
+type _VarNames = str | list[str] | None
 
 
 class DLTask(AgentTask):

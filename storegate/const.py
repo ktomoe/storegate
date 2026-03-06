@@ -17,8 +17,6 @@ Examples:
     >>> if phase in const.PHASES:
     ...     pass
 """
-from __future__ import annotations
-
 from typing import Any, Final
 
 TRAIN: Final[str] = 'train'

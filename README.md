@@ -16,7 +16,7 @@ With PyTorch support:
 pip install "storegate[pytorch]"
 ```
 
-**Requirements:** Python >= 3.9
+**Requirements:** Python >= 3.12
 
 ---
 

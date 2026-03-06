@@ -8,11 +8,10 @@ Examples:
     >>> logger.add_file_handler('storegate.log')
     >>> logger.debug("This message is not printed at INFO level.")
 """
-from __future__ import annotations
-
 import logging
 import functools
-from typing import Any, Callable, TypeVar
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 DEBUG = logging.DEBUG        # 10
 INFO = logging.INFO          # 20

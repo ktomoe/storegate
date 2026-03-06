@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import functools
 import re
+from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Callable, Generator, Iterator, TypeVar
+from typing import Any, TypeVar
 
 import numpy as np
 
