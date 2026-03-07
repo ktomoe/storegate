@@ -216,6 +216,19 @@ def test_multiple_batches_update_all_metrics() -> None:
     assert 'acc' in result
 
 
+def test_label_dependent_metrics_skipped_when_labels_none() -> None:
+    em = EpochMetric(['loss', 'acc', 'lr'], make_ml(lr=0.02))
+    batch = {
+        'batch_size': 4,
+        'outputs': torch.randn(4, 3),
+        'labels': None,
+    }
+    result = em(batch)
+    assert 'loss' not in result
+    assert 'acc' not in result
+    assert result['lr'] == [0.02]
+
+
 # ---------------------------------------------------------------------------
 # get_pbar_metric
 # ---------------------------------------------------------------------------

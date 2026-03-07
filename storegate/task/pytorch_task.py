@@ -202,9 +202,17 @@ class PytorchTask(DLTask):
 
     def step_batch(self, data: Any, phase: str) -> dict[str, Any]:
         """Process batch data and update weights."""
-        inputs, labels = data
+        if isinstance(data, (tuple, list)):
+            inputs, labels = data
+        else:
+            inputs, labels = data, None
+
+        if phase != 'test' and labels is None:
+            raise ValueError(f'labels are required for phase={phase!r}.')
+
         inputs = self.add_device(inputs, self._device)
-        labels = self.add_device(labels, self._device)
+        if labels is not None:
+            labels = self.add_device(labels, self._device)
 
         rtn_result: dict[str, Any] = {'batch_size': util.inputs_size(inputs)}
 
@@ -212,15 +220,17 @@ class PytorchTask(DLTask):
         with ctx:
             outputs = self.step_model(inputs)
 
-            loss_result = self.step_loss(outputs, labels)
+            if labels is not None:
+                loss_result = self.step_loss(outputs, labels)
+                rtn_result['loss'] = loss_result
 
-            if phase == 'train':
-                self.step_optimizer(loss_result['loss'])
+                if phase == 'train':
+                    self.step_optimizer(loss_result['loss'])
 
-            elif phase == 'test':
+            if phase == 'test':
                 rtn_result['pred'] = outputs
 
-            rtn_result.update(dict(outputs=outputs, labels=labels, loss=loss_result))
+            rtn_result.update(dict(outputs=outputs, labels=labels))
 
         return rtn_result
 

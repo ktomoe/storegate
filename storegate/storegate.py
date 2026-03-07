@@ -459,39 +459,52 @@ class StoreGate:
     @require_data_id
     def copy_to_memory(self, var_name: str, phase: str, output_var_name: str | None = None) -> None:
         """Copy data from storage to memory."""
+        self._copy_between_backends(
+            var_name=var_name,
+            phase=phase,
+            src_backend='zarr',
+            dst_backend='numpy',
+            output_var_name=output_var_name,
+            dst_label='memory',
+        )
+
+    def _copy_between_backends(
+        self,
+        *,
+        var_name: str,
+        phase: str,
+        src_backend: str,
+        dst_backend: str,
+        output_var_name: str | None,
+        dst_label: str,
+    ) -> None:
+        """Copy a variable between backends with shared validation and checks."""
         _validate_var_name(var_name)
         _validate_phase(phase)
         if output_var_name is not None:
             _validate_var_name(output_var_name)
-        if output_var_name is None:
-            output_var_name = var_name
+        output_var_name = output_var_name or var_name
 
-        with self.using_backend('zarr'):
+        with self.using_backend(src_backend):
             tmp_data = self.get_data(var_name, phase=phase)
 
-        with self.using_backend('numpy'):
+        with self.using_backend(dst_backend):
             if output_var_name in self.get_var_names(phase):
-                raise ValueError(f'{output_var_name} already exists in memory. Delete first or use a different output_var_name.')
+                raise ValueError(f'{output_var_name} already exists in {dst_label}. Delete first or use a different output_var_name.')
             self.add_data(output_var_name, tmp_data, phase)
 
 
     @require_data_id
     def copy_to_storage(self, var_name: str, phase: str, output_var_name: str | None = None) -> None:
         """Copy data from memory to storage."""
-        _validate_var_name(var_name)
-        _validate_phase(phase)
-        if output_var_name is not None:
-            _validate_var_name(output_var_name)
-        if output_var_name is None:
-            output_var_name = var_name
-
-        with self.using_backend('numpy'):
-            tmp_data = self.get_data(var_name, phase=phase)
-
-        with self.using_backend('zarr'):
-            if output_var_name in self.get_var_names(phase):
-                raise ValueError(f'{output_var_name} already exists in storage. Delete first or use a different output_var_name.')
-            self.add_data(output_var_name, tmp_data, phase)
+        self._copy_between_backends(
+            var_name=var_name,
+            phase=phase,
+            src_backend='numpy',
+            dst_backend='zarr',
+            output_var_name=output_var_name,
+            dst_label='storage',
+        )
 
 
     @require_data_id

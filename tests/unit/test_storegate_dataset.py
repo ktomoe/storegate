@@ -134,10 +134,20 @@ def test_multi_element_list_var_names_returns_list_of_tensors(sg_multi) -> None:
     assert data[1].shape == (3,)
 
 
-def test_none_true_var_names_returns_none_target(sg) -> None:
+def test_none_true_var_names_returns_input_only(sg) -> None:
     ds = StoreGateDataset(sg, 'train', input_var_names='x', true_var_names=None)
-    _, target = ds[0]
-    assert target is None
+    data = ds[0]
+    assert isinstance(data, torch.Tensor)
+    assert data.shape == (4,)
+
+
+def test_none_true_var_names_preload_returns_input_only(sg) -> None:
+    ds = StoreGateDataset(
+        sg, 'train', input_var_names='x', true_var_names=None, preload=True
+    )
+    data = ds[0]
+    assert isinstance(data, torch.Tensor)
+    assert data.shape == (4,)
 
 
 def test_none_input_var_names_returns_none_data(sg) -> None:

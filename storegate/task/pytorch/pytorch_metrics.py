@@ -31,13 +31,19 @@ class EpochMetric:
         result: dict[str, Any] = {}
         batch_size = batch_result['batch_size']
         self.total += batch_size
+        buff_index = 0
 
-        for ii, metric in enumerate(self.metrics):
+        for metric in self.metrics:
             if isinstance(metric, str):
                 metric_fn = getattr(self, metric)
+                metric_name = metric
             else:
                 metric_fn = metric
-                metric = metric_fn.__name__
+                metric_name = metric_fn.__name__
+
+            # test phase can run without labels; skip label-dependent metrics.
+            if batch_result.get('labels') is None and metric_name in ('loss', 'acc'):
+                continue
 
             metric_result = metric_fn(batch_result)
 
@@ -46,17 +52,18 @@ class EpochMetric:
                     self.buffs.append([jmetric * batch_size for jmetric in metric_result])
                 else:
                     self.buffs.append(metric_result * batch_size)
-                result[metric] = metric_result
+                result[metric_name] = metric_result
 
             else:
                 if isinstance(metric_result, list):
                     for jj, jmetric in enumerate(metric_result):
-                        self.buffs[ii][jj] += jmetric * batch_size
-                    result[metric] = [jmetric / self.total for jmetric in self.buffs[ii]]
+                        self.buffs[buff_index][jj] += jmetric * batch_size
+                    result[metric_name] = [jmetric / self.total for jmetric in self.buffs[buff_index]]
 
                 else:
-                    self.buffs[ii] += metric_result * batch_size
-                    result[metric] = self.buffs[ii] / self.total
+                    self.buffs[buff_index] += metric_result * batch_size
+                    result[metric_name] = self.buffs[buff_index] / self.total
+            buff_index += 1
 
         return result
 

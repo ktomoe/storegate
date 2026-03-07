@@ -26,6 +26,16 @@ def make_tensor(value: float, size: int = 2) -> torch.Tensor:
     return torch.full((size,), value)
 
 
+def make_step_task() -> PytorchTask:
+    """Return a minimal task instance for step_batch tests."""
+    task = PytorchTask.__new__(PytorchTask)
+    task._device = torch.device('cpu')
+    task.step_model = MagicMock(return_value=torch.tensor([[0.1, 0.9]]))
+    task.step_loss = MagicMock(return_value={'loss': torch.tensor(0.3)})
+    task.step_optimizer = MagicMock()
+    return task
+
+
 # ---------------------------------------------------------------------------
 # _output_to_storegate — output_var_names is None
 # ---------------------------------------------------------------------------
@@ -186,3 +196,20 @@ def test_set_hps_loss_valid_suffix_sets_arg():
     task = make_dl_task()
     task.set_hps({'loss__weight': 0.5})
     assert task._loss_args['weight'] == 0.5
+
+
+def test_step_batch_test_without_labels_skips_loss():
+    task = make_step_task()
+    result = task.step_batch(torch.tensor([[1.0, 2.0]]), phase='test')
+
+    assert result['labels'] is None
+    assert 'loss' not in result
+    assert 'pred' in result
+    task.step_loss.assert_not_called()
+    task.step_optimizer.assert_not_called()
+
+
+def test_step_batch_train_without_labels_raises():
+    task = make_step_task()
+    with pytest.raises(ValueError, match='labels are required'):
+        task.step_batch(torch.tensor([[1.0, 2.0]]), phase='train')

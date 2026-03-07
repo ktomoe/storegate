@@ -77,14 +77,23 @@ class StoreGateDataset(tdata.Dataset):  # type: ignore[type-arg]
     def __getitem__(
         self,
         index: int,
-    ) -> tuple[torch.Tensor | list[torch.Tensor], torch.Tensor | list[torch.Tensor]]:
+    ) -> (
+        torch.Tensor
+        | list[torch.Tensor]
+        | tuple[torch.Tensor | list[torch.Tensor], torch.Tensor | list[torch.Tensor]]
+    ):
         if self._preload:
             data = self._index_tensor(self._data, index)
             target = self._index_tensor(self._target, index)
+            if target is None:
+                return data  # type: ignore[return-value]
             return data, target
 
-        return self._get_tensors(self._input_var_names, index), \
-               self._get_tensors(self._true_var_names, index)
+        data = self._get_tensors(self._input_var_names, index)
+        target = self._get_tensors(self._true_var_names, index)
+        if target is None:
+            return data  # type: ignore[return-value]
+        return data, target
 
     def _index_tensor(
         self,
