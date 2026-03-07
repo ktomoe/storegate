@@ -8,7 +8,13 @@ from storegate.database.database import Database
 
 
 class NumpyDatabase(Database):
-    """Base class of Numpy database."""
+    """In-memory database backed by numpy arrays.
+
+    Warning:
+        This class is **not thread-safe**.  Concurrent access from
+        multiple threads without external locking may corrupt internal
+        chunk lists, caches, or metadata.
+    """
     def __init__(self) -> None:
         # data_id -> phase -> var_name -> list[np.ndarray]
         self._chunks: dict[str, Any] = {}

@@ -208,7 +208,16 @@ def _validate_output_dir(output_dir: str, mode: str) -> None:
 
 
 class StoreGate:
-    """Data management class."""
+    """Data management class.
+
+    Warning:
+        This class is **not thread-safe**.  All access to a single
+        ``StoreGate`` instance (and its underlying databases) must be
+        serialised by the caller.  Concurrent reads/writes from multiple
+        threads without external locking may cause data corruption or
+        inconsistent metadata.  Use one instance per thread, or protect
+        shared instances with a ``threading.Lock``.
+    """
 
     def __init__(self, output_dir: str, mode: str = 'r', chunk: int = 1000, data_id: str | None = None) -> None:
         """Initialize the storegate and the zarr architecture.
