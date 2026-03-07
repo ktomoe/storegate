@@ -85,6 +85,24 @@ class _HpsRecordTask:
         pass
 
 
+class _OutputVarNamesTask:
+    """Records output_var_names after SearchAgent-driven HP injection."""
+    def __init__(self, output_var_names: object) -> None:
+        self._hps: dict = {}
+        self._output_var_names = output_var_names
+
+    def set_hps(self, hps: dict) -> None:
+        self._hps = dict(hps)
+        if 'output_var_names' in hps:
+            self._output_var_names = hps['output_var_names']
+
+    def execute(self) -> dict:
+        return {'output_var_names': self._output_var_names}
+
+    def finalize(self) -> None:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -478,6 +496,79 @@ def test_execute_cuda_ids_round_robin_two_workers() -> None:
     agent.finalize()  # sort by job_id for deterministic assertion
     assigned = [r['result']['cuda_id'] for r in agent._history]
     assert assigned == [0, 1, 0, 1]
+
+
+def test_suffix_job_id_default_is_false() -> None:
+    agent = SearchAgent(task=MagicMock())
+    assert agent._suffix_job_id is False
+
+
+def test_suffix_job_id_appends_to_string_output_var_names() -> None:
+    agent = SearchAgent(
+        task=_OutputVarNamesTask('pred'),
+        hps=None,
+        suffix_job_id=True,
+    )
+    agent.execute()
+    assert agent._history[0]['result']['output_var_names'] == 'pred_job0'
+
+
+def test_suffix_job_id_appends_to_list_output_var_names() -> None:
+    agent = SearchAgent(
+        task=_OutputVarNamesTask(['pred', 'score']),
+        hps=None,
+        suffix_job_id=True,
+    )
+    agent.execute()
+    assert agent._history[0]['result']['output_var_names'] == ['pred_job0', 'score_job0']
+
+
+def test_suffix_job_id_appends_to_phase_dict_output_var_names() -> None:
+    agent = SearchAgent(
+        task=_OutputVarNamesTask({'train': None, 'valid': ['val_pred'], 'test': 'pred'}),
+        hps=None,
+        suffix_job_id=True,
+    )
+    agent.execute()
+    assert agent._history[0]['result']['output_var_names'] == {
+        'train': None,
+        'valid': ['val_pred_job0'],
+        'test': 'pred_job0',
+    }
+
+
+def test_suffix_job_id_uses_job_id_for_each_job() -> None:
+    agent = SearchAgent(
+        task=_OutputVarNamesTask('pred'),
+        hps={'a': [1, 2]},
+        suffix_job_id=True,
+    )
+    agent.execute()
+    agent.finalize()
+    assert [r['result']['output_var_names'] for r in agent._history] == [
+        'pred_job0',
+        'pred_job1',
+    ]
+
+
+def test_suffix_job_id_suffixes_explicit_hps_string_output_var_names() -> None:
+    agent = SearchAgent(
+        task=_OutputVarNamesTask('pred'),
+        hps={'output_var_names': ['custom']},
+        suffix_job_id=True,
+    )
+    agent.execute()
+    assert agent._history[0]['result']['output_var_names'] == 'custom_job0'
+
+
+def test_suffix_job_id_suffixes_explicit_hps_list_output_var_names() -> None:
+    agent = SearchAgent(
+        task=_OutputVarNamesTask('pred'),
+        hps={'output_var_names': [['custom', 'score']]},
+        suffix_job_id=True,
+    )
+    agent.execute()
+    assert agent._history[0]['result']['output_var_names'] == ['custom_job0', 'score_job0']
 
 
 def test_execute_then_finalize_writes_json(tmp_path) -> None:

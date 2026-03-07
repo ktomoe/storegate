@@ -39,7 +39,8 @@ class SearchAgent(Agent):
                  cuda_ids: list[int] | None = None,
                  disable_tqdm: bool = True,
                  json_dump: str | None = None,
-                 job_timeout: float | None = None) -> None:
+                 job_timeout: float | None = None,
+                 suffix_job_id: bool = False) -> None:
         """Initialize search agent.
 
         Args:
@@ -55,6 +56,9 @@ class SearchAgent(Agent):
                 complete.  If no job finishes within this window, all remaining pending
                 jobs are cancelled and a ``TimeoutError`` is recorded in their result
                 entries.  ``None`` (default) means wait indefinitely.
+            suffix_job_id (bool): If True, inject ``output_var_names`` into each job's
+                hyperparameters with ``_job{job_id}`` appended to every output variable
+                name. Supports ``str``, ``list[str]``, and phase dictionaries.
         """
         if isinstance(cuda_ids, int):
             raise TypeError(
@@ -85,6 +89,7 @@ class SearchAgent(Agent):
         self._disable_tqdm = disable_tqdm
         self._json_dump: Path | None = self._validate_json_dump(json_dump)
         self._job_timeout = job_timeout
+        self._suffix_job_id = suffix_job_id
 
         self._context = 'spawn'
         self._history: list[dict[str, Any]] = []
@@ -118,6 +123,29 @@ class SearchAgent(Agent):
         values = hps.values()
 
         return [dict(zip(keys, value)) for value in product(*values)]
+
+    @staticmethod
+    def _suffix_output_var_names(
+        output_var_names: Any,
+        job_id: int,
+    ) -> Any:
+        suffix = f'_job{job_id}'
+
+        if output_var_names is None:
+            return None
+        if isinstance(output_var_names, str):
+            return output_var_names + suffix
+        if isinstance(output_var_names, list):
+            return [var_name + suffix for var_name in output_var_names]
+        if isinstance(output_var_names, dict):
+            return {
+                phase: SearchAgent._suffix_output_var_names(phase_var_names, job_id)
+                for phase, phase_var_names in output_var_names.items()
+            }
+        raise TypeError(
+            'output_var_names must be str, list[str], dict[str, ...], or None '
+            f'when suffix_job_id=True, got {type(output_var_names).__name__}.'
+        )
 
     def execute(self) -> None:
         """Run all hyperparameter jobs and collect results into ``_history``.
@@ -293,7 +321,17 @@ class SearchAgent(Agent):
         }
 
         try:
-            task.set_hps(hps)
+            task_hps = dict(hps)
+            if self._suffix_job_id and hasattr(task, '_output_var_names'):
+                base_output_var_names = task_hps.get(
+                    'output_var_names',
+                    getattr(task, '_output_var_names'),
+                )
+                task_hps['output_var_names'] = self._suffix_output_var_names(
+                    base_output_var_names,
+                    job_id,
+                )
+            task.set_hps(task_hps)
             result['result'] = task.execute()
         except Exception as e:
             result['error'] = f'{type(e).__name__}: {e}'

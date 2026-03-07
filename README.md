@@ -140,6 +140,7 @@ agent = GridSearchAgent(
         'batch_size':         [64, 128],
     },
     cuda_ids=[0, 1],       # one worker process per GPU
+    suffix_job_id=True,    # writes test outputs as e.g. pred_job0, pred_job1, ...
     json_dump='results.json',
 )
 agent.execute()
