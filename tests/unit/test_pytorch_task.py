@@ -21,10 +21,24 @@ from storegate.task.pytorch_task import PytorchTask  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
+def compile_var_names(var_names):
+    if isinstance(var_names, dict):
+        return {
+            'train': [var_names['train']] if isinstance(var_names.get('train'), str) else var_names.get('train'),
+            'valid': [var_names['valid']] if isinstance(var_names.get('valid'), str) else var_names.get('valid'),
+            'test': [var_names['test']] if isinstance(var_names.get('test'), str) else var_names.get('test'),
+        }
+    if isinstance(var_names, str):
+        resolved = [var_names]
+    else:
+        resolved = var_names
+    return {'train': resolved, 'valid': resolved, 'test': resolved}
+
+
 def make_task(output_var_names):
     """Return a minimal PytorchTask with mocked storegate."""
     task = PytorchTask.__new__(PytorchTask)
-    task._output_var_names = output_var_names
+    task._output_var_names = compile_var_names(output_var_names)
     task._storegate = MagicMock()
     return task
 
@@ -57,7 +71,16 @@ def make_runtime_task(**overrides: Any) -> PytorchTask:
         device='cpu',
     )
     kwargs.update(overrides)
-    return PytorchTask(**kwargs)
+    task = PytorchTask(**kwargs)
+
+    input_var_names = compile_var_names(task._input_var_names)
+    true_var_names = compile_var_names(task._true_var_names)
+    task._storegate.get_var_names.side_effect = lambda phase: [
+        *(input_var_names[phase] or []),
+        *(true_var_names[phase] or []),
+    ]
+    task.compile_var_names()
+    return task
 
 
 class _FakeTqdm:
@@ -324,7 +347,7 @@ def test_fit_with_valid_runs_both_phases_each_epoch() -> None:
 
 def test_predict_skips_when_test_phase_empty() -> None:
     task = PytorchTask.__new__(PytorchTask)
-    task._output_var_names = ['pred']
+    task._output_var_names = compile_var_names(['pred'])
     task._storegate = MagicMock()
     task._storegate.get_var_names.return_value = []
     task._ml = DLEnv(model=MagicMock())
@@ -342,7 +365,7 @@ def test_predict_skips_when_test_phase_empty() -> None:
 
 def test_predict_deletes_existing_outputs_before_running() -> None:
     task = PytorchTask.__new__(PytorchTask)
-    task._output_var_names = {'train': ['ignored'], 'test': 'pred'}
+    task._output_var_names = compile_var_names({'train': ['ignored'], 'test': 'pred'})
     task._storegate = MagicMock()
     task._storegate.get_var_names.side_effect = [['pred', 'x'], ['x']]
     task._ml = DLEnv(model=MagicMock())

@@ -1,12 +1,13 @@
 import contextlib
 import copy
-from typing import Any
+from typing import Any, cast
 
 import torch
 from tqdm import tqdm  # type: ignore[import-untyped]
 
 from storegate import logger, const
 from storegate.task import DLTask
+from storegate.task.dl_task import _CompiledVarNames
 from storegate.task.pytorch import pytorch_util as util
 from storegate.task.pytorch.storegate_dataset import StoreGateDataset
 from storegate.task.pytorch.pytorch_metrics import EpochMetric, get_pbar_metric
@@ -109,8 +110,8 @@ class PytorchTask(DLTask):
 
         dataset = StoreGateDataset(self._storegate,
                                    phase,
-                                   input_var_names=self._get_var_names_for_phase(self._input_var_names, phase),
-                                   true_var_names=self._get_var_names_for_phase(self._true_var_names, phase),
+                                   input_var_names=self._get_var_names_for_phase(cast(_CompiledVarNames, self._input_var_names), phase),
+                                   true_var_names=self._get_var_names_for_phase(cast(_CompiledVarNames, self._true_var_names), phase),
                                    **dataset_kwargs)
 
         dataloader_args: dict[str, Any] = dict(dataset=dataset)
@@ -154,7 +155,9 @@ class PytorchTask(DLTask):
     def predict(self) -> dict[str, Any]:
         """Predict and upload outputs to storegate."""
         deleted = False
-        output_var_names = self._get_var_names_for_phase(self._output_var_names, 'test')
+        output_var_names = self._get_var_names_for_phase(
+            cast(_CompiledVarNames, self._output_var_names), 'test'
+        )
         if output_var_names is not None:
             for var_name in output_var_names:
                 if var_name in self._storegate.get_var_names('test'):
@@ -281,7 +284,9 @@ class PytorchTask(DLTask):
 
 
     def _output_to_storegate(self, outputs: torch.Tensor | list[torch.Tensor]) -> None:
-        output_var_names = self._get_var_names_for_phase(self._output_var_names, 'test')
+        output_var_names = self._get_var_names_for_phase(
+            cast(_CompiledVarNames, self._output_var_names), 'test'
+        )
         if output_var_names is None:
             return
 

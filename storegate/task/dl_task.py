@@ -1,5 +1,5 @@
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, cast
 
 from storegate import const
 from storegate.task.agent_task import AgentTask
@@ -9,7 +9,7 @@ type _SinglePhaseVarNames = str | list[str] | None
 type _PhaseVarNames = Mapping[str, _SinglePhaseVarNames]
 type _VarNames = _SinglePhaseVarNames | _PhaseVarNames
 type _ResolvedVarNames = list[str] | None
-type _CompiledVarNames = _ResolvedVarNames | dict[str, _ResolvedVarNames]
+type _CompiledVarNames = dict[str, _ResolvedVarNames]
 
 
 class DLTask(AgentTask):
@@ -118,8 +118,16 @@ class DLTask(AgentTask):
         if self._preload:
             for phase in const.PHASES:
                 phase_var_names = (
-                    (self._get_var_names_for_phase(self._input_var_names, phase) or [])
-                    + (self._get_var_names_for_phase(self._true_var_names, phase) or [])
+                    (
+                        self._get_var_names_for_phase(
+                            cast(_CompiledVarNames, self._input_var_names), phase
+                        ) or []
+                    )
+                    + (
+                        self._get_var_names_for_phase(
+                            cast(_CompiledVarNames, self._true_var_names), phase
+                        ) or []
+                    )
                 )
                 for var_name in phase_var_names:
                     with self._storegate.using_backend('zarr'):
@@ -168,6 +176,8 @@ class DLTask(AgentTask):
         self._input_var_names = self._compile_var_name_groups(self._input_var_names)
         self._output_var_names = self._compile_var_name_groups(self._output_var_names)
         self._true_var_names = self._compile_var_name_groups(self._true_var_names)
+        self._validate_required_var_names_exist()
+        self._validate_output_var_names_do_not_overlap()
 
     def compile_model(self) -> None:
         """Compile model."""
@@ -191,7 +201,8 @@ class DLTask(AgentTask):
                 phase: self._compile_single_phase_var_names(var_names.get(phase))
                 for phase in const.PHASES
             }
-        return self._compile_single_phase_var_names(var_names)
+        compiled = self._compile_single_phase_var_names(var_names)
+        return {phase: compiled for phase in const.PHASES}
 
     def _compile_single_phase_var_names(
         self,
@@ -203,17 +214,12 @@ class DLTask(AgentTask):
 
     def _get_var_names_for_phase(
         self,
-        var_names: _VarNames,
+        var_names: _CompiledVarNames,
         phase: str,
     ) -> _ResolvedVarNames:
         if phase not in const.PHASES:
             raise ValueError(f'phase must be one of {const.PHASES}, got {phase!r}.')
-
-        if isinstance(var_names, Mapping):
-            self._validate_phase_var_names(var_names)
-            return self._compile_single_phase_var_names(var_names.get(phase))
-
-        return self._compile_single_phase_var_names(var_names)
+        return var_names[phase]
 
     def _validate_phase_var_names(self, var_names: _PhaseVarNames) -> None:
         invalid_phases = sorted(set(var_names) - set(const.PHASES))
@@ -221,4 +227,69 @@ class DLTask(AgentTask):
             raise ValueError(
                 f'var_names dict contains invalid phases {invalid_phases}. '
                 f'Expected only {const.PHASES}.'
+            )
+
+    def _validate_required_var_names_exist(self) -> None:
+        errors: list[str] = []
+        for label, var_names in (
+            ('input', cast(_CompiledVarNames, self._input_var_names)),
+            ('true', cast(_CompiledVarNames, self._true_var_names)),
+        ):
+            errors.extend(self._missing_required_var_name_errors(label, var_names))
+
+        if errors:
+            raise ValueError(
+                'Required StoreGate variables are missing:\n' + '\n'.join(errors)
+            )
+
+    def _missing_required_var_name_errors(
+        self,
+        label: str,
+        var_names: _CompiledVarNames,
+    ) -> list[str]:
+        errors: list[str] = []
+        for phase in const.PHASES:
+            phase_var_names = var_names[phase]
+            if phase_var_names is None:
+                continue
+
+            existing_var_names = set(self._storegate.get_var_names(phase))
+            missing_var_names = [
+                var_name for var_name in phase_var_names
+                if var_name not in existing_var_names
+            ]
+            if missing_var_names:
+                errors.append(
+                    f"  phase='{phase}' missing {label}_var_names={missing_var_names}"
+                )
+
+        return errors
+
+    def _validate_output_var_names_do_not_overlap(self) -> None:
+        errors: list[str] = []
+
+        for phase in const.PHASES:
+            input_var_names = cast(_CompiledVarNames, self._input_var_names)[phase] or []
+            true_var_names = cast(_CompiledVarNames, self._true_var_names)[phase] or []
+            output_var_names = cast(_CompiledVarNames, self._output_var_names)[phase]
+
+            if output_var_names is None:
+                continue
+
+            input_overlap = sorted(set(output_var_names) & set(input_var_names))
+            true_overlap = sorted(set(output_var_names) & set(true_var_names))
+
+            if input_overlap:
+                errors.append(
+                    f"  phase='{phase}' output_var_names overlap with input_var_names={input_overlap}"
+                )
+            if true_overlap:
+                errors.append(
+                    f"  phase='{phase}' output_var_names overlap with true_var_names={true_overlap}"
+                )
+
+        if errors:
+            raise ValueError(
+                'output_var_names must not overlap with input_var_names or true_var_names:\n'
+                + '\n'.join(errors)
             )

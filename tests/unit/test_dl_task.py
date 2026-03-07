@@ -19,12 +19,17 @@ class ConcreteDLTask(DLTask):
     pass
 
 
-def make_sg() -> MagicMock:
+def make_sg(existing_var_names: dict[str, list[str]] | None = None) -> MagicMock:
     """Create a mock StoreGate."""
     sg = MagicMock()
     sg.set_data_id = MagicMock()
     sg.compile = MagicMock()
-    sg.get_var_names = MagicMock(return_value=[])
+    if existing_var_names is None:
+        sg.get_var_names = MagicMock(return_value=[])
+    else:
+        sg.get_var_names = MagicMock(
+            side_effect=lambda phase: list(existing_var_names.get(phase, []))
+        )
     sg.using_backend = MagicMock()
     return sg
 
@@ -235,31 +240,62 @@ def test_set_hps_does_not_call_set_data_id_when_none() -> None:
 # ---------------------------------------------------------------------------
 
 def test_compile_var_names_str_to_list() -> None:
-    task = make_task(input_var_names='x', output_var_names='pred', true_var_names='y')
+    task = make_task(
+        storegate=make_sg({
+            'train': ['x', 'y'],
+            'valid': ['x', 'y'],
+            'test': ['x', 'y'],
+        }),
+        input_var_names='x',
+        output_var_names='pred',
+        true_var_names='y',
+    )
     task.compile_var_names()
-    assert task._input_var_names == ['x']
-    assert task._output_var_names == ['pred']
-    assert task._true_var_names == ['y']
+    assert task._input_var_names == {'train': ['x'], 'valid': ['x'], 'test': ['x']}
+    assert task._output_var_names == {'train': ['pred'], 'valid': ['pred'], 'test': ['pred']}
+    assert task._true_var_names == {'train': ['y'], 'valid': ['y'], 'test': ['y']}
 
 
 def test_compile_var_names_list_unchanged() -> None:
-    task = make_task(input_var_names=['x', 'z'], output_var_names=['pred'], true_var_names=['y'])
+    task = make_task(
+        storegate=make_sg({
+            'train': ['x', 'z', 'y'],
+            'valid': ['x', 'z', 'y'],
+            'test': ['x', 'z', 'y'],
+        }),
+        input_var_names=['x', 'z'],
+        output_var_names=['pred'],
+        true_var_names=['y'],
+    )
     task.compile_var_names()
-    assert task._input_var_names == ['x', 'z']
-    assert task._output_var_names == ['pred']
-    assert task._true_var_names == ['y']
+    assert task._input_var_names == {
+        'train': ['x', 'z'],
+        'valid': ['x', 'z'],
+        'test': ['x', 'z'],
+    }
+    assert task._output_var_names == {
+        'train': ['pred'],
+        'valid': ['pred'],
+        'test': ['pred'],
+    }
+    assert task._true_var_names == {'train': ['y'], 'valid': ['y'], 'test': ['y']}
 
 
-def test_compile_var_names_none_unchanged() -> None:
+def test_compile_var_names_none_normalizes_to_phase_dict() -> None:
     task = make_task()
     task.compile_var_names()
-    assert task._input_var_names is None
-    assert task._output_var_names is None
-    assert task._true_var_names is None
+    assert task._input_var_names == {'train': None, 'valid': None, 'test': None}
+    assert task._output_var_names == {'train': None, 'valid': None, 'test': None}
+    assert task._true_var_names == {'train': None, 'valid': None, 'test': None}
 
 
 def test_compile_var_names_phase_dict_normalizes_values() -> None:
     task = make_task(
+        storegate=make_sg({
+            'train': ['x0', 'y0'],
+            'valid': ['x1', 'x2', 'y1'],
+            'test': [],
+        }),
         input_var_names={'train': 'x0', 'valid': ['x1', 'x2'], 'test': None},
         output_var_names={'test': 'pred'},
         true_var_names={'train': 'y0', 'valid': 'y1'},
@@ -291,10 +327,105 @@ def test_compile_var_names_phase_dict_rejects_invalid_phase() -> None:
         task.compile_var_names()
 
 
+def test_compile_var_names_raises_when_required_input_missing() -> None:
+    task = make_task(
+        storegate=make_sg({
+            'train': ['x', 'y'],
+            'valid': ['y'],
+            'test': ['x', 'y'],
+        }),
+        input_var_names='x',
+        true_var_names='y',
+    )
+
+    with pytest.raises(ValueError, match="phase='valid' missing input_var_names=\\['x'\\]"):
+        task.compile_var_names()
+
+
+def test_compile_var_names_raises_when_required_true_missing_in_phase_dict() -> None:
+    task = make_task(
+        storegate=make_sg({
+            'train': ['x_train', 'y_train'],
+            'valid': ['x_valid'],
+            'test': ['x_test'],
+        }),
+        input_var_names={'train': 'x_train', 'valid': 'x_valid', 'test': 'x_test'},
+        true_var_names={'train': 'y_train', 'valid': 'y_valid', 'test': None},
+    )
+
+    with pytest.raises(ValueError, match="phase='valid' missing true_var_names=\\['y_valid'\\]"):
+        task.compile_var_names()
+
+
+def test_compile_var_names_does_not_require_output_var_names_to_exist() -> None:
+    task = make_task(
+        storegate=make_sg({
+            'train': ['x', 'y'],
+            'valid': ['x', 'y'],
+            'test': ['x', 'y'],
+        }),
+        input_var_names='x',
+        output_var_names='pred',
+        true_var_names='y',
+    )
+
+    task.compile_var_names()
+
+    assert task._output_var_names == {
+        'train': ['pred'],
+        'valid': ['pred'],
+        'test': ['pred'],
+    }
+
+
+def test_compile_var_names_raises_when_output_overlaps_input() -> None:
+    task = make_task(
+        storegate=make_sg({
+            'train': ['x', 'y'],
+            'valid': ['x', 'y'],
+            'test': ['x', 'y'],
+        }),
+        input_var_names='x',
+        output_var_names='x',
+        true_var_names='y',
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"phase='train' output_var_names overlap with input_var_names=\['x'\]",
+    ):
+        task.compile_var_names()
+
+
+def test_compile_var_names_raises_when_output_overlaps_true_in_phase_dict() -> None:
+    task = make_task(
+        storegate=make_sg({
+            'train': ['x_train', 'y_train'],
+            'valid': ['x_valid', 'y_valid'],
+            'test': ['x_test'],
+        }),
+        input_var_names={'train': 'x_train', 'valid': 'x_valid', 'test': 'x_test'},
+        output_var_names={'valid': 'y_valid'},
+        true_var_names={'train': 'y_train', 'valid': 'y_valid', 'test': None},
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"phase='valid' output_var_names overlap with true_var_names=\['y_valid'\]",
+    ):
+        task.compile_var_names()
+
+
 def test_get_var_names_for_phase_resolves_phase_specific_values() -> None:
     task = make_task(
+        storegate=make_sg({
+            'train': ['x_train'],
+            'valid': ['x_valid'],
+            'test': [],
+        }),
         input_var_names={'train': 'x_train', 'valid': ['x_valid'], 'test': None},
     )
+    task.compile_var_names()
 
     assert task._get_var_names_for_phase(task._input_var_names, 'train') == ['x_train']
     assert task._get_var_names_for_phase(task._input_var_names, 'valid') == ['x_valid']
@@ -387,11 +518,12 @@ def test_execute_preload_copies_vars_to_memory(tmp_path) -> None:
 
     task = ConcreteDLTask(
         storegate=sg,
-        input_var_names=['x'],
-        true_var_names=['y'],
+        input_var_names={'train': 'x', 'valid': None, 'test': None},
+        true_var_names={'train': 'y', 'valid': None, 'test': None},
         preload=True,
     )
 
+    task.compile_var_names()
     task.compile = lambda: None
     task.execute()
 
@@ -416,11 +548,12 @@ def test_execute_preload_skips_missing_vars(tmp_path) -> None:
 
     task = ConcreteDLTask(
         storegate=sg,
-        input_var_names=['x'],
-        true_var_names=['y'],
+        input_var_names={'train': 'x', 'valid': 'x', 'test': None},
+        true_var_names={'train': 'y', 'valid': None, 'test': None},
         preload=True,
     )
 
+    task.compile_var_names()
     task.compile = lambda: None
     task.execute()  # should not raise
 
@@ -444,10 +577,11 @@ def test_execute_preload_deletes_existing_numpy_before_copy(tmp_path) -> None:
 
     task = ConcreteDLTask(
         storegate=sg,
-        input_var_names=['x'],
+        input_var_names={'train': 'x', 'valid': None, 'test': None},
         preload=True,
     )
 
+    task.compile_var_names()
     task.compile = lambda: None
     task.execute()
 
@@ -475,9 +609,10 @@ def test_execute_preload_runs_fit_predict_under_numpy_backend(tmp_path) -> None:
 
     task = TrackerTask(
         storegate=sg,
-        input_var_names=['x'],
+        input_var_names={'train': 'x', 'valid': None, 'test': None},
         preload=True,
     )
+    task.compile_var_names()
     task.compile = lambda: None
     task.execute()
 
@@ -502,6 +637,7 @@ def test_execute_preload_uses_phase_specific_var_names(tmp_path) -> None:
         preload=True,
     )
 
+    task.compile_var_names()
     task.compile = lambda: None
     task.execute()
 
