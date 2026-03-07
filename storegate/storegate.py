@@ -217,6 +217,12 @@ class StoreGate:
         threads without external locking may cause data corruption or
         inconsistent metadata.  Use one instance per thread, or protect
         shared instances with a ``threading.Lock``.
+
+        **Concurrent processes** may write to the same zarr store only
+        when each process writes to a different ``data_id`` or a
+        different set of variable names (``output_var_names``).
+        Concurrent writes to the *same* ``data_id`` and variable name
+        will corrupt data because zarr has no built-in file locking.
     """
 
     def __init__(self, output_dir: str, mode: str = 'r', chunk: int = 1000, data_id: str | None = None) -> None:

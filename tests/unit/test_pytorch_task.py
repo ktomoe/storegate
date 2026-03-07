@@ -513,6 +513,68 @@ def test_build_module_class_with_none_modules_succeeds():
     assert isinstance(model, nn.Linear)
 
 
+def test_build_module_instance_returns_deepcopy():
+    import torch.nn as nn
+
+    original = nn.Linear(2, 1)
+    result = build_module(original, {}, None)
+    assert isinstance(result, nn.Linear)
+    assert result is not original
+
+
+def test_build_module_instance_with_args_warns():
+    import logging
+    import logging.handlers
+    import torch.nn as nn
+    from storegate import logger as sg_logger
+
+    handler = logging.handlers.MemoryHandler(capacity=100)
+    handler.setLevel(logging.WARNING)
+    sg_logger._logger.addHandler(handler)
+    try:
+        original = nn.Linear(2, 1)
+        build_module(original, {'lr': 0.1}, None)
+        messages = [h.getMessage() for h in handler.buffer]
+        assert any('instance object is given but args is also provided' in m for m in messages)
+    finally:
+        sg_logger._logger.removeHandler(handler)
+
+
+# ---------------------------------------------------------------------------
+# inputs_size
+# ---------------------------------------------------------------------------
+
+from storegate.task.pytorch.pytorch_util import inputs_size  # noqa: E402
+
+
+def test_inputs_size_tensor():
+    t = torch.randn(8, 3)
+    assert inputs_size(t) == 8
+
+
+def test_inputs_size_list_of_tensors():
+    ts = [torch.randn(4, 3), torch.randn(4, 5)]
+    assert inputs_size(ts) == 4
+
+
+def test_inputs_size_tuple_of_tensors():
+    ts = (torch.randn(6, 2),)
+    assert inputs_size(ts) == 6
+
+
+def test_inputs_size_batch_size_attr():
+    class FakeInput:
+        batch_size = 16
+    assert inputs_size(FakeInput()) == 16
+
+
+def test_inputs_size_len_fallback():
+    class FakeInput:
+        def __len__(self):
+            return 7
+    assert inputs_size(FakeInput()) == 7
+
+
 # ---------------------------------------------------------------------------
 # DLTask.set_hps — empty suffix validation
 # ---------------------------------------------------------------------------

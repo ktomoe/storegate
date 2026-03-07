@@ -37,6 +37,12 @@ class ZarrDatabase(Database):
         db = self._db[data_id][phase]
 
         if var_name in db.array_keys():
+            existing_shape = db[var_name].shape[1:]
+            if data.shape[1:] != existing_shape:
+                raise ValueError(
+                    f"Shape mismatch for '{var_name}' in '{phase}': "
+                    f"expected {existing_shape}, got {data.shape[1:]}"
+                )
             existing_dtype = db[var_name].dtype
             if data.dtype != existing_dtype:
                 promoted = np.result_type(existing_dtype, data.dtype)

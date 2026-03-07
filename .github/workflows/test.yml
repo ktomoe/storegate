@@ -28,7 +28,38 @@ jobs:
         run: pip install ".[dev]"
 
       - name: Run unit and integration tests (no PyTorch)
-        run: pytest tests/ --ignore=tests/unit/test_pytorch_task.py --ignore=tests/unit/test_pytorch_metrics.py --ignore=tests/unit/test_storegate_dataset.py -v
+        run: >
+          pytest tests/
+          --ignore=tests/unit/test_pytorch_task.py
+          --ignore=tests/unit/test_pytorch_metrics.py
+          --ignore=tests/unit/test_storegate_dataset.py
+          -v --cov --cov-config=coverage-noptorch.ini
+          --cov-report=term-missing --cov-fail-under=90
+
+  lint:
+    name: "Lint & audit"
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install ".[dev]" pip-audit
+
+      - name: Run ruff
+        run: ruff check storegate/
+
+      - name: Run mypy
+        run: mypy storegate/ --ignore-missing-imports
+
+      - name: Run pip-audit
+        run: pip-audit
 
   test-pytorch:
     name: "PyTorch (Python 3.12)"
@@ -47,4 +78,4 @@ jobs:
         run: pip install ".[dev,pytorch]" --extra-index-url https://download.pytorch.org/whl/cpu
 
       - name: Run full test suite
-        run: pytest tests/ -v --cov --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=75
+        run: pytest tests/ -v --cov --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=80

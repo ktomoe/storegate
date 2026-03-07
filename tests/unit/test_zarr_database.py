@@ -40,6 +40,24 @@ def test_add_data_appends_to_existing(zarr_db):
     np.testing.assert_array_equal(result, expected)
 
 
+def test_add_data_shape_mismatch_raises(zarr_db):
+    data1 = np.array([[1.0, 2.0], [3.0, 4.0]])       # shape (2, 2)
+    data2 = np.array([[5.0, 6.0, 7.0]])                # shape (1, 3)
+    zarr_db.add_data(DATA_ID, 'x', data1, 'train')
+
+    with pytest.raises(ValueError, match='Shape mismatch'):
+        zarr_db.add_data(DATA_ID, 'x', data2, 'train')
+
+
+def test_add_data_shape_mismatch_error_message(zarr_db):
+    data1 = np.ones((3, 4, 5))
+    data2 = np.ones((2, 4, 6))
+    zarr_db.add_data(DATA_ID, 'x', data1, 'train')
+
+    with pytest.raises(ValueError, match=r'\(4, 5\).*\(4, 6\)'):
+        zarr_db.add_data(DATA_ID, 'x', data2, 'train')
+
+
 def test_add_data_dtype_safe_upcast_succeeds(zarr_db):
     # float64 existing + int32 incoming: promoted = float64 == existing → safe
     data1 = np.array([[1.0, 2.0]], dtype=np.float64)
