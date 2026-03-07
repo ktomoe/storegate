@@ -11,7 +11,7 @@ __all__ = [
 ]
 
 try:
-    from storegate.task.pytorch_task import PytorchTask
+    from storegate.task.pytorch_task import PytorchTask as PytorchTask
     __all__.append('PytorchTask')
 except ImportError:
     pass

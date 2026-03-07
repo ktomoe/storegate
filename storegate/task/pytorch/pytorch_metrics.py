@@ -76,19 +76,23 @@ class EpochMetric:
         labels = batch_result['labels']
 
         if isinstance(outputs, list):
-            result: list[float] = []
+            if not isinstance(labels, list):
+                raise TypeError('labels must be a list when outputs is a list.')
+            results: list[float] = []
             for output, label in zip(outputs, labels):
                 _, preds = torch.max(output, 1)
                 corrects = torch.sum(preds == label.data)
-                result.append(corrects.detach().item() / len(label))
-        else:
-            _, preds = torch.max(outputs, 1)
-            corrects = torch.sum(preds == labels.data)
-            result = corrects.detach().item() / len(labels)
-        return result
+                results.append(corrects.detach().item() / len(label))
+            return results
+
+        _, preds = torch.max(outputs, 1)
+        corrects = torch.sum(preds == labels.data)
+        return corrects.detach().item() / len(labels)
 
     def lr(self, batch_result: dict[str, Any]) -> list[float]:
-        return [p['lr'] for p in self.ml.optimizer.param_groups]
+        if self.ml.optimizer is None:
+            raise ValueError("Metric 'lr' requires an optimizer.")
+        return [float(p['lr']) for p in self.ml.optimizer.param_groups]
 
 
 def get_pbar_metric(epoch_result: dict[str, Any]) -> dict[str, Any]:

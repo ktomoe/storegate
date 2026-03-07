@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock
 
 import numpy as np
 
@@ -258,6 +258,49 @@ def test_compile_var_names_none_unchanged() -> None:
     assert task._true_var_names is None
 
 
+def test_compile_var_names_phase_dict_normalizes_values() -> None:
+    task = make_task(
+        input_var_names={'train': 'x0', 'valid': ['x1', 'x2'], 'test': None},
+        output_var_names={'test': 'pred'},
+        true_var_names={'train': 'y0', 'valid': 'y1'},
+    )
+
+    task.compile_var_names()
+
+    assert task._input_var_names == {
+        'train': ['x0'],
+        'valid': ['x1', 'x2'],
+        'test': None,
+    }
+    assert task._output_var_names == {
+        'train': None,
+        'valid': None,
+        'test': ['pred'],
+    }
+    assert task._true_var_names == {
+        'train': ['y0'],
+        'valid': ['y1'],
+        'test': None,
+    }
+
+
+def test_compile_var_names_phase_dict_rejects_invalid_phase() -> None:
+    task = make_task(input_var_names={'train': 'x', 'dev': 'x_dev'})
+
+    with pytest.raises(ValueError, match='invalid phases'):
+        task.compile_var_names()
+
+
+def test_get_var_names_for_phase_resolves_phase_specific_values() -> None:
+    task = make_task(
+        input_var_names={'train': 'x_train', 'valid': ['x_valid'], 'test': None},
+    )
+
+    assert task._get_var_names_for_phase(task._input_var_names, 'train') == ['x_train']
+    assert task._get_var_names_for_phase(task._input_var_names, 'valid') == ['x_valid']
+    assert task._get_var_names_for_phase(task._input_var_names, 'test') is None
+
+
 # ---------------------------------------------------------------------------
 # compile — calls sub-compile methods in order
 # ---------------------------------------------------------------------------
@@ -350,7 +393,7 @@ def test_execute_preload_copies_vars_to_memory(tmp_path) -> None:
     )
 
     task.compile = lambda: None
-    result = task.execute()
+    task.execute()
 
     # After preload, data should exist in numpy backend
     sg.set_backend('numpy')
@@ -439,6 +482,37 @@ def test_execute_preload_runs_fit_predict_under_numpy_backend(tmp_path) -> None:
     task.execute()
 
     assert backends_during_fit == ['numpy', 'numpy']
+
+
+def test_execute_preload_uses_phase_specific_var_names(tmp_path) -> None:
+    from storegate import StoreGate
+
+    sg = StoreGate(output_dir=str(tmp_path), mode='w', data_id='test')
+    sg.add_data('x_train', np.arange(6).reshape(3, 2), phase='train')
+    sg.add_data('y_train', np.arange(3), phase='train')
+    sg.add_data('x_valid', np.arange(4).reshape(2, 2), phase='valid')
+    sg.add_data('y_valid', np.arange(2), phase='valid')
+    sg.add_data('x_test', np.arange(2).reshape(1, 2), phase='test')
+    sg.compile()
+
+    task = ConcreteDLTask(
+        storegate=sg,
+        input_var_names={'train': 'x_train', 'valid': 'x_valid', 'test': 'x_test'},
+        true_var_names={'train': 'y_train', 'valid': 'y_valid', 'test': None},
+        preload=True,
+    )
+
+    task.compile = lambda: None
+    task.execute()
+
+    sg.set_backend('numpy')
+    assert 'x_train' in sg.get_var_names('train')
+    assert 'y_train' in sg.get_var_names('train')
+    assert 'x_valid' in sg.get_var_names('valid')
+    assert 'y_valid' in sg.get_var_names('valid')
+    assert 'x_test' in sg.get_var_names('test')
+    assert 'y_train' not in sg.get_var_names('test')
+    assert 'y_valid' not in sg.get_var_names('test')
 
 
 # ---------------------------------------------------------------------------

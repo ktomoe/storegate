@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 import torch.utils.data as tdata
 
 if TYPE_CHECKING:
     from storegate.storegate import StoreGate
+
+type _TensorBatch = torch.Tensor | list[torch.Tensor]
+type _DatasetItem = _TensorBatch | None | tuple[_TensorBatch | None, _TensorBatch]
 
 
 class StoreGateDataset(tdata.Dataset):  # type: ignore[type-arg]
@@ -45,8 +48,8 @@ class StoreGateDataset(tdata.Dataset):  # type: ignore[type-arg]
         self._preload = preload
         self._size: int = len(storegate[phase])
 
-        self._data: torch.Tensor | list[torch.Tensor] | None = None
-        self._target: torch.Tensor | list[torch.Tensor] | None = None
+        self._data: _TensorBatch | None = None
+        self._target: _TensorBatch | None = None
 
         if preload:
             self._data = self._get_tensors(input_var_names)
@@ -59,7 +62,7 @@ class StoreGateDataset(tdata.Dataset):  # type: ignore[type-arg]
         self,
         var_names: str | list[str] | None,
         index: int | None = None,
-    ) -> torch.Tensor | list[torch.Tensor] | None:
+    ) -> _TensorBatch | None:
         """Load var_names from storegate as tensors.
 
         Args:
@@ -70,38 +73,37 @@ class StoreGateDataset(tdata.Dataset):  # type: ignore[type-arg]
             return None
         if isinstance(var_names, str):
             return torch.as_tensor(self._storegate.get_data(var_names, self._phase, index))
-        if len(var_names) == 1:  # type: ignore[arg-type]
-            return torch.as_tensor(self._storegate.get_data(var_names[0], self._phase, index))  # type: ignore[index]
-        return [self._get_tensors(v, index) for v in var_names]  # type: ignore[union-attr,return-value]
+        if len(var_names) == 1:
+            return torch.as_tensor(self._storegate.get_data(var_names[0], self._phase, index))
+        return [
+            torch.as_tensor(self._storegate.get_data(var_name, self._phase, index))
+            for var_name in var_names
+        ]
 
     def __getitem__(
         self,
         index: int,
-    ) -> (
-        torch.Tensor
-        | list[torch.Tensor]
-        | tuple[torch.Tensor | list[torch.Tensor], torch.Tensor | list[torch.Tensor]]
-    ):
+    ) -> _DatasetItem:
         if self._preload:
             data = self._index_tensor(self._data, index)
             target = self._index_tensor(self._target, index)
             if target is None:
-                return data  # type: ignore[return-value]
+                return data
             return data, target
 
         data = self._get_tensors(self._input_var_names, index)
         target = self._get_tensors(self._true_var_names, index)
         if target is None:
-            return data  # type: ignore[return-value]
+            return data
         return data, target
 
     def _index_tensor(
         self,
-        tensors: torch.Tensor | list[torch.Tensor] | None,
+        tensors: _TensorBatch | None,
         index: int,
-    ) -> torch.Tensor | list[torch.Tensor] | None:
+    ) -> _TensorBatch | None:
         if tensors is None:
             return None
         if isinstance(tensors, list):
-            return [self._index_tensor(t, index) for t in tensors]  # type: ignore[return-value]
+            return [tensor[index] for tensor in tensors]
         return tensors[index]

@@ -59,6 +59,13 @@ class Database(metaclass=ABCMeta):
         Override in backends that support metadata persistence (e.g. zarr).
         """
 
+    def get_pending_var_names(self) -> dict[str, dict[str, list[str]]]:
+        """Return in-memory-only variable names, grouped by data_id and phase.
+
+        Backends without a pending/in-memory concept return an empty result.
+        """
+        return {}
+
     @abstractmethod
     def close(self) -> None:
         """Release any resources held by the database."""

@@ -6,8 +6,8 @@ import numpy as np
 
 torch = pytest.importorskip('torch')
 
-from storegate import StoreGate
-from storegate.task.pytorch.storegate_dataset import StoreGateDataset
+from storegate import StoreGate  # noqa: E402
+from storegate.task.pytorch.storegate_dataset import StoreGateDataset  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

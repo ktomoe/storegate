@@ -49,7 +49,7 @@ class _SlowTask:
 
     def execute(self) -> dict:
         import time
-        time.sleep(2)
+        time.sleep(0.8)
         return {}
 
     def finalize(self) -> None:

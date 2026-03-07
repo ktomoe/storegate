@@ -3,8 +3,7 @@ import copy
 from typing import Any
 
 import torch
-import numpy as np
-from tqdm import tqdm
+from tqdm import tqdm  # type: ignore[import-untyped]
 
 from storegate import logger, const
 from storegate.task import DLTask
@@ -110,8 +109,8 @@ class PytorchTask(DLTask):
 
         dataset = StoreGateDataset(self._storegate,
                                    phase,
-                                   input_var_names=self._input_var_names,
-                                   true_var_names=self._true_var_names,
+                                   input_var_names=self._get_var_names_for_phase(self._input_var_names, phase),
+                                   true_var_names=self._get_var_names_for_phase(self._true_var_names, phase),
                                    **dataset_kwargs)
 
         dataloader_args: dict[str, Any] = dict(dataset=dataset)
@@ -155,8 +154,9 @@ class PytorchTask(DLTask):
     def predict(self) -> dict[str, Any]:
         """Predict and upload outputs to storegate."""
         deleted = False
-        if self._output_var_names is not None:
-            for var_name in self._output_var_names:
+        output_var_names = self._get_var_names_for_phase(self._output_var_names, 'test')
+        if output_var_names is not None:
+            for var_name in output_var_names:
                 if var_name in self._storegate.get_var_names('test'):
                     self._storegate.delete_data(var_name, 'test')
                     deleted = True
@@ -177,7 +177,8 @@ class PytorchTask(DLTask):
 
     def step_epoch(self, epoch: int, phase: str, dataloader: DataLoader) -> dict[str, Any]:  # type: ignore[type-arg]
         """Process model for given epoch and phase."""
-        epoch_metric = EpochMetric(self._metrics, self._ml)
+        metrics = self._metrics if self._metrics is not None else ['loss']
+        epoch_metric = EpochMetric(metrics, self._ml)
         num_batches = len(dataloader)
         pbar_args: dict[str, Any] = dict(total=num_batches, disable=False)
         pbar_args.update(self._pbar_args)
@@ -250,6 +251,11 @@ class PytorchTask(DLTask):
 
     def step_optimizer(self, loss: torch.Tensor) -> None:
         """Process optimizer."""
+        if self._ml.optimizer is None:
+            raise ValueError(
+                'optimizer is required for training. '
+                'Pass optimizer=..., or override step_optimizer() in a subclass.'
+            )
         self._ml.optimizer.zero_grad(set_to_none=True)
         loss.backward()
         self._ml.optimizer.step()
@@ -262,9 +268,9 @@ class PytorchTask(DLTask):
     ) -> torch.Tensor | list[torch.Tensor]:
         """Add data to device."""
         if isinstance(data, list):
-            return [self.add_device(idata, device) for idata in data]  # type: ignore[return-value]
+            return [idata.to(device) for idata in data]
 
-        return data.to(device)  # type: ignore[union-attr]
+        return data.to(device)
 
 
     ##########################################################################
@@ -275,17 +281,18 @@ class PytorchTask(DLTask):
 
 
     def _output_to_storegate(self, outputs: torch.Tensor | list[torch.Tensor]) -> None:
-        if self._output_var_names is None:
+        output_var_names = self._get_var_names_for_phase(self._output_var_names, 'test')
+        if output_var_names is None:
             return
 
         if not isinstance(outputs, list):
             outputs = [outputs]
 
-        if len(outputs) != len(self._output_var_names):
+        if len(outputs) != len(output_var_names):
             raise ValueError(
                 f'Number of model outputs ({len(outputs)}) does not match '
-                f'output_var_names ({len(self._output_var_names)}).'
+                f'output_var_names ({len(output_var_names)}).'
             )
 
-        for output_var_name, output in zip(self._output_var_names, outputs):
+        for output_var_name, output in zip(output_var_names, outputs):
             self._storegate.add_data(output_var_name, output.detach().cpu().numpy(), 'test')

@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from storegate import StoreGate
-from storegate.storegate import _AllPhaseAccessor, _PhaseAccessor, _VarAccessor
+from storegate.storegate import _AllPhaseAccessor, _PhaseAccessor
 
 
 DATA_ID = 'test_data'
@@ -404,6 +404,28 @@ def test_compile_cross_backend_restores_backend_after_check(sg_id):
     sg_id.add_data('x', np.array([[1.0]]), phase='train')
     sg_id.compile(cross_backend=True)
     assert sg_id.get_backend() == 'numpy'
+
+
+def test_compile_cross_backend_failure_does_not_mark_backend_compiled(sg_id):
+    """Failed cross-backend validation must not leave the active backend compiled."""
+    sg_id.add_data('x', np.array([[1.0], [2.0]]), phase='train')
+    with sg_id.using_backend('numpy'):
+        sg_id.add_data('x', np.array([[9.0]]), phase='train')
+        with pytest.raises(ValueError, match='Cross-backend inconsistency'):
+            sg_id.compile(cross_backend=True)
+        assert sg_id._metadata[DATA_ID]['compiled']['numpy'] is False
+        assert 'train' not in sg_id._metadata[DATA_ID]['sizes']['numpy']
+
+
+def test_compile_cross_backend_failure_keeps_len_unavailable(sg_id):
+    """len() must remain unavailable after a failed cross-backend compile."""
+    sg_id.add_data('x', np.array([[1.0], [2.0]]), phase='train')
+    with sg_id.using_backend('numpy'):
+        sg_id.add_data('x', np.array([[9.0]]), phase='train')
+        with pytest.raises(ValueError, match='Cross-backend inconsistency'):
+            sg_id.compile(cross_backend=True)
+        with pytest.raises(ValueError, match='supported only after compile'):
+            len(sg_id['train'])
 
 
 # ---------------------------------------------------------------------------

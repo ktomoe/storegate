@@ -1,10 +1,15 @@
+from collections.abc import Callable, Mapping
 from typing import Any
 
-from storegate import logger, const
+from storegate import const
 from storegate.task.agent_task import AgentTask
 from storegate.task.dl_env import DLEnv
 
-type _VarNames = str | list[str] | None
+type _SinglePhaseVarNames = str | list[str] | None
+type _PhaseVarNames = Mapping[str, _SinglePhaseVarNames]
+type _VarNames = _SinglePhaseVarNames | _PhaseVarNames
+type _ResolvedVarNames = list[str] | None
+type _CompiledVarNames = _ResolvedVarNames | dict[str, _ResolvedVarNames]
 
 
 class DLTask(AgentTask):
@@ -19,7 +24,7 @@ class DLTask(AgentTask):
                  optimizer_args: dict[str, Any] | None = None,
                  loss: Any = None,
                  loss_args: dict[str, Any] | None = None,
-                 metrics: list[Any] | None = None,
+                 metrics: list[str | Callable[..., Any]] | None = None,
                  num_epochs: int = 10,
                  batch_size: int = 64,
                  preload: bool = False,
@@ -57,7 +62,7 @@ class DLTask(AgentTask):
         self._optimizer_args: dict[str, Any] = optimizer_args
         self._loss: Any = loss
         self._loss_args: dict[str, Any] = loss_args
-        self._metrics: list[Any] | None = metrics
+        self._metrics: list[str | Callable[..., Any]] | None = metrics
 
         self._num_epochs: int = num_epochs
         self._batch_size: int = batch_size
@@ -112,7 +117,11 @@ class DLTask(AgentTask):
 
         if self._preload:
             for phase in const.PHASES:
-                for var_name in (self._input_var_names or []) + (self._true_var_names or []):
+                phase_var_names = (
+                    (self._get_var_names_for_phase(self._input_var_names, phase) or [])
+                    + (self._get_var_names_for_phase(self._true_var_names, phase) or [])
+                )
+                for var_name in phase_var_names:
                     with self._storegate.using_backend('zarr'):
                         zarr_vars = self._storegate.get_var_names(phase)
                     if var_name not in zarr_vars:
@@ -156,14 +165,9 @@ class DLTask(AgentTask):
 
     def compile_var_names(self) -> None:
         """Compile variable names."""
-        if isinstance(self._input_var_names, str):
-            self._input_var_names = [self._input_var_names]
-
-        if isinstance(self._output_var_names, str):
-            self._output_var_names = [self._output_var_names]
-
-        if isinstance(self._true_var_names, str):
-            self._true_var_names = [self._true_var_names]
+        self._input_var_names = self._compile_var_name_groups(self._input_var_names)
+        self._output_var_names = self._compile_var_name_groups(self._output_var_names)
+        self._true_var_names = self._compile_var_name_groups(self._true_var_names)
 
     def compile_model(self) -> None:
         """Compile model."""
@@ -176,3 +180,45 @@ class DLTask(AgentTask):
     def compile_loss(self) -> None:
         """Compile loss."""
         pass
+
+    def _compile_var_name_groups(
+        self,
+        var_names: _VarNames,
+    ) -> _CompiledVarNames:
+        if isinstance(var_names, Mapping):
+            self._validate_phase_var_names(var_names)
+            return {
+                phase: self._compile_single_phase_var_names(var_names.get(phase))
+                for phase in const.PHASES
+            }
+        return self._compile_single_phase_var_names(var_names)
+
+    def _compile_single_phase_var_names(
+        self,
+        var_names: _SinglePhaseVarNames,
+    ) -> _ResolvedVarNames:
+        if isinstance(var_names, str):
+            return [var_names]
+        return var_names
+
+    def _get_var_names_for_phase(
+        self,
+        var_names: _VarNames,
+        phase: str,
+    ) -> _ResolvedVarNames:
+        if phase not in const.PHASES:
+            raise ValueError(f'phase must be one of {const.PHASES}, got {phase!r}.')
+
+        if isinstance(var_names, Mapping):
+            self._validate_phase_var_names(var_names)
+            return self._compile_single_phase_var_names(var_names.get(phase))
+
+        return self._compile_single_phase_var_names(var_names)
+
+    def _validate_phase_var_names(self, var_names: _PhaseVarNames) -> None:
+        invalid_phases = sorted(set(var_names) - set(const.PHASES))
+        if invalid_phases:
+            raise ValueError(
+                f'var_names dict contains invalid phases {invalid_phases}. '
+                f'Expected only {const.PHASES}.'
+            )

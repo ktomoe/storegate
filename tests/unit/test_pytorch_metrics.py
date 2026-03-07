@@ -7,7 +7,7 @@ from typing import Any
 
 torch = pytest.importorskip('torch')
 
-from storegate.task.pytorch.pytorch_metrics import EpochMetric, get_pbar_metric
+from storegate.task.pytorch.pytorch_metrics import EpochMetric, get_pbar_metric  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@ from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import TracebackType
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 import numpy as np
 
@@ -54,7 +54,7 @@ class _PhaseAccessor:
         return item in self._storegate.get_var_names(self._phase)
 
     def __len__(self) -> int:
-        data_id = self._storegate._data_id
+        data_id = self._storegate._require_current_data_id()
         backend = self._storegate.get_backend()
         if not self._storegate._metadata[data_id]['compiled'][backend]:
             raise ValueError('len() is supported only after compile')
@@ -274,7 +274,7 @@ class StoreGate:
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
-    ) -> bool:
+    ) -> Literal[False]:
         self.close()
         return False
 
@@ -320,6 +320,12 @@ class StoreGate:
         """Return the current data_id."""
         return self._data_id
 
+    def _require_current_data_id(self) -> str:
+        data_id = self._data_id
+        if data_id is None:
+            raise RuntimeError('data_id is not set. Call set_data_id() first.')
+        return data_id
+
     def set_data_id(self, data_id: str) -> None:
         """Set the default ``data_id`` and initialize the zarr.
 
@@ -334,8 +340,8 @@ class StoreGate:
         self._db.initialize(data_id)
 
         if data_id not in self._metadata:
-            self._metadata[self._data_id] = {'compiled': {'zarr': False, 'numpy': False},
-                                             'sizes': {'zarr': {}, 'numpy': {}}}
+            self._metadata[data_id] = {'compiled': {'zarr': False, 'numpy': False},
+                                       'sizes': {'zarr': {}, 'numpy': {}}}
             self._load_meta(data_id)
 
 
@@ -391,7 +397,8 @@ class StoreGate:
                 'data must be at least 1-dimensional. '
                 'Wrap scalar values in a list or array, e.g. np.array([value]).'
             )
-        self._db.add_data(self._data_id, var_name, data, phase)
+        data_id = self._require_current_data_id()
+        self._db.add_data(data_id, var_name, data, phase)
         self._invalidate_compiled(phase)
 
 
@@ -421,7 +428,8 @@ class StoreGate:
         _validate_var_name(var_name)
         _validate_phase(phase)
         data = np.asarray(data)
-        self._db.update_data(self._data_id, var_name, data, phase, index)
+        data_id = self._require_current_data_id()
+        self._db.update_data(data_id, var_name, data, phase, index)
         self._invalidate_compiled(phase)
 
 
@@ -430,7 +438,8 @@ class StoreGate:
         """Retrieve data from storegate with given options."""
         _validate_var_name(var_name)
         _validate_phase(phase)
-        return self._db.get_data(self._data_id, var_name, phase, index)
+        data_id = self._require_current_data_id()
+        return self._db.get_data(data_id, var_name, phase, index)
 
 
     @require_data_id
@@ -438,13 +447,14 @@ class StoreGate:
         """Delete data associated with var_names."""
         _validate_var_name(var_name)
         _validate_phase(phase, allow_all=True)
+        data_id = self._require_current_data_id()
         if phase == 'all':
             for iphase in const.PHASES:
                 if var_name in self.get_var_names(iphase):
-                    self._db.delete_data(self._data_id, var_name, iphase)
+                    self._db.delete_data(data_id, var_name, iphase)
 
         else:
-            self._db.delete_data(self._data_id, var_name, phase)
+            self._db.delete_data(data_id, var_name, phase)
         self._invalidate_compiled(phase)
 
 
@@ -452,7 +462,8 @@ class StoreGate:
     def get_var_names(self, phase: str) -> list[str]:
         """Returns registered var_names for given phase."""
         _validate_phase(phase)
-        metadata = self._db.get_metadata(self._data_id, phase)
+        data_id = self._require_current_data_id()
+        metadata = self._db.get_metadata(data_id, phase)
         return list(metadata.keys())
 
 
@@ -527,9 +538,10 @@ class StoreGate:
                 Raises ValueError if a mismatch is found.
         """
 
+        data_id = self._require_current_data_id()
         num_events: list[int | None] = []
         for phase in const.PHASES:
-            metadata = self._db.get_metadata(self._data_id, phase)
+            metadata = self._db.get_metadata(data_id, phase)
 
             phase_events: list[int] = []
             for data in metadata.values():
@@ -548,15 +560,17 @@ class StoreGate:
             else:
                 num_events.append(None)
 
-        self._metadata[self._data_id]['compiled'][self.get_backend()] = True
-
-        for phase, events in zip(const.PHASES, num_events):
-            self._metadata[self._data_id]['sizes'][self.get_backend()][phase] = events
+        backend = self.get_backend()
+        next_sizes = {
+            phase: events for phase, events in zip(const.PHASES, num_events)
+        }
 
         if cross_backend:
             self._check_cross_backend_consistency()
 
-        self._save_meta(self._data_id)
+        self._metadata[data_id]['compiled'][backend] = True
+        self._metadata[data_id]['sizes'][backend] = next_sizes
+        self._save_meta(data_id)
 
         if show_info:
             self.show_info()
@@ -567,12 +581,13 @@ class StoreGate:
         Called from compile(cross_backend=True). Raises ValueError listing all
         mismatches found across phases before aborting.
         """
+        data_id = self._require_current_data_id()
         errors: list[str] = []
         for phase in const.PHASES:
             with self.using_backend('zarr'):
-                zarr_meta = self._db.get_metadata(self._data_id, phase)
+                zarr_meta = self._db.get_metadata(data_id, phase)
             with self.using_backend('numpy'):
-                numpy_meta = self._db.get_metadata(self._data_id, phase)
+                numpy_meta = self._db.get_metadata(data_id, phase)
 
             for var_name in sorted(set(zarr_meta) & set(numpy_meta)):
                 z = zarr_meta[var_name]['total_events']
@@ -607,8 +622,9 @@ class StoreGate:
 
     def _invalidate_compiled(self, phase: str) -> None:
         """Mark the current backend as not compiled and clear stale size entries."""
+        data_id = self._require_current_data_id()
         backend = self.get_backend()
-        meta = self._metadata[self._data_id]
+        meta = self._metadata[data_id]
         meta['compiled'][backend] = False
         sizes = meta['sizes'][backend]
         if phase == 'all':
@@ -617,19 +633,20 @@ class StoreGate:
         else:
             sizes.pop(phase, None)
         if backend == 'zarr':
-            self._save_meta(self._data_id)
+            self._save_meta(data_id)
 
     @require_data_id
     def show_info(self) -> None:
         """Show information currently registered in storegate."""
-        is_compiled = self._metadata[self._data_id]['compiled'][self.get_backend()]
-        header = f'StoreGate data_id : {self._data_id}, compiled : {is_compiled}'
+        data_id = self._require_current_data_id()
+        is_compiled = self._metadata[data_id]['compiled'][self.get_backend()]
+        header = f'StoreGate data_id : {data_id}, compiled : {is_compiled}'
 
         names = ['phase', 'backend', 'var_name', 'var_type', 'total_events', 'var_shape']
 
         table_data: list[list[str] | str] = []
         for phase in const.PHASES:
-            metadata = self._db.get_metadata(self._data_id, phase)
+            metadata = self._db.get_metadata(data_id, phase)
             if not metadata:
                 continue
 

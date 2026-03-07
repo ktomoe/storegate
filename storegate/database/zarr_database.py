@@ -1,5 +1,5 @@
 """ZarrDatabase module."""
-from typing import Any
+from typing import Any, Literal, cast
 
 import numpy as np
 import zarr
@@ -14,7 +14,8 @@ class ZarrDatabase(Database):
         self._output_dir = output_dir
         self._chunk = chunk
         self._mode = mode
-        self._db: Any = zarr.open(self._output_dir, mode=mode)
+        zarr_mode = cast(Literal['r', 'r+', 'a', 'w', 'w-'], mode)
+        self._db: Any = zarr.open(self._output_dir, mode=zarr_mode)
 
     def initialize(self, data_id: str) -> None:
         """Initialize the store for the given data_id.

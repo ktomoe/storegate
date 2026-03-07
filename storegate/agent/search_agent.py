@@ -1,10 +1,12 @@
 import concurrent.futures
 import json
 import multiprocessing as mp
+from collections.abc import Sequence
+from itertools import islice, product
 from pathlib import Path
 from typing import Any
-from tqdm import tqdm
-from itertools import product, islice
+
+from tqdm import tqdm  # type: ignore[import-untyped]
 
 from storegate import logger
 from storegate.agent import Agent
@@ -144,7 +146,11 @@ class SearchAgent(Agent):
         each cancelled job.
         """
         # cuda_ids=None means use the task's own device; run with a single worker.
-        cuda_ids = self._cuda_ids if self._cuda_ids is not None else [None]
+        cuda_ids: Sequence[int | None]
+        if self._cuda_ids is None:
+            cuda_ids = [None]
+        else:
+            cuda_ids = self._cuda_ids
         num_jobs = len(args)
         num_workers = len(cuda_ids)
 
@@ -223,11 +229,16 @@ class SearchAgent(Agent):
                     break
 
                 for future in done:
-                    job_arg = future_to_arg.pop(future, None)
+                    completed_job_arg: list[Any] | None = future_to_arg.pop(future) if future in future_to_arg else None
                     try:
                         self._history.append(future.result())
                     except Exception as e:
-                        _, hps, job_id, trial_id = job_arg if job_arg is not None else (None, {}, -1, None)
+                        if completed_job_arg is None:
+                            hps = {}
+                            job_id = -1
+                            trial_id = None
+                        else:
+                            _, hps, job_id, trial_id = completed_job_arg
                         error_msg = f'{type(e).__name__}: {e}'
                         self._history.append({'hps': hps, 'job_id': job_id, 'trial_id': trial_id, 'error': error_msg})
                         logger.error(f'Job {job_id} (trial {trial_id}) raised in worker: {error_msg}')
