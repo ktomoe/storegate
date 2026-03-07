@@ -52,17 +52,20 @@ class NumpyDatabase(Database):
                     f"Shape mismatch for '{var_name}' in '{phase}': "
                     f"expected {meta['shape']}, got {data.shape[1:]}"
                 )
+            existing_dtype = np.dtype(meta['type'])
+            if data.dtype != existing_dtype:
+                promoted = np.result_type(existing_dtype, data.dtype)
+                if promoted != existing_dtype:
+                    raise ValueError(
+                        f"dtype mismatch for '{var_name}' in '{phase}': "
+                        f"existing={existing_dtype}, incoming={data.dtype.name}. "
+                        f"Appending would require a lossy cast to {existing_dtype} "
+                        f"(safe promotion would be {promoted.name}). "
+                        f"Cast your data to {existing_dtype} explicitly before adding."
+                    )
             self._chunks[data_id][phase][var_name].append(data)
             self._cache[data_id][phase][var_name] = None  # invalidate
             meta['total_events'] += len(data)
-            promoted = np.result_type(np.dtype(meta['type']), data.dtype).name
-            if promoted != meta['type']:
-                from storegate import logger
-                logger.warn(
-                    f"dtype promotion for '{var_name}' in '{phase}': "
-                    f"{meta['type']} + {data.dtype.name} -> {promoted}"
-                )
-            meta['type'] = promoted
         else:
             self._chunks[data_id][phase][var_name] = [data]
             self._cache[data_id][phase][var_name] = None
@@ -93,6 +96,20 @@ class NumpyDatabase(Database):
         if data_id not in self._metadata:
             return {}
         return {k: dict(v) for k, v in self._metadata[data_id][phase].items()}
+
+    def get_pending_var_names(self) -> dict[str, dict[str, list[str]]]:
+        """Return variable names currently held in memory, grouped by data_id and phase.
+
+        Returns:
+            ``{data_id: {phase: [var_name, ...]}}``.
+            Only non-empty phases are included.
+        """
+        result: dict[str, dict[str, list[str]]] = {}
+        for data_id, phases in self._chunks.items():
+            for phase, vars_ in phases.items():
+                if vars_:
+                    result.setdefault(data_id, {})[phase] = list(vars_.keys())
+        return result
 
     def close(self) -> None:
         """Release all in-memory data held by this database.

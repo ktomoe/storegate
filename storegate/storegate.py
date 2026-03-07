@@ -288,15 +288,13 @@ class StoreGate:
             This method is called automatically when using StoreGate as a
             context manager (``with StoreGate(...) as sg:``).
         """
-        numpy_chunks = self._db._db['numpy']._chunks
-        for data_id, phases in numpy_chunks.items():
-            for phase, vars_ in phases.items():
-                if vars_:
-                    var_list = ', '.join(vars_.keys())
-                    logger.debug(
-                        f"close(): discarding numpy data —"
-                        f" data_id='{data_id}', phase='{phase}', vars=[{var_list}]"
-                    )
+        for data_id, phases in self._db.get_pending_var_names().items():
+            for phase, var_names in phases.items():
+                var_list = ', '.join(var_names)
+                logger.debug(
+                    f"close(): discarding numpy data —"
+                    f" data_id='{data_id}', phase='{phase}', vars=[{var_list}]"
+                )
         self._db.close()
 
     @require_data_id
@@ -378,15 +376,12 @@ class StoreGate:
             phase (str): One of ``'train'``, ``'valid'``, or ``'test'``.
 
         Note:
-            **dtype handling differs by backend:**
-
-            - **zarr** (disk): the array dtype is fixed at creation time.
-              Appending data whose dtype would require promotion raises
-              ``ValueError``.  Cast your data explicitly before calling
-              ``add_data``, e.g. ``data.astype(existing_dtype)``.
-            - **numpy** (memory): dtype promotion is performed automatically
-              (e.g. ``int32`` + ``float64`` → ``float64``) and a warning is
-              logged.  No data is lost.
+            The array dtype is fixed at creation time.  Appending data whose
+            dtype would require promotion (e.g. ``float32`` + ``float64``)
+            raises ``ValueError``.  Cast your data explicitly before calling
+            ``add_data``, e.g. ``data.astype(existing_dtype)``.
+            Appending a narrower dtype that can be safely represented by the
+            existing dtype (e.g. ``int32`` into ``float64``) is allowed.
         """
         _validate_var_name(var_name)
         _validate_phase(phase)

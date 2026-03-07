@@ -57,6 +57,10 @@ class HybridDatabase(Database):
         """Delegate to the zarr backend's save_meta_attrs."""
         self._db['zarr'].save_meta_attrs(data_id, meta)
 
+    def get_pending_var_names(self) -> dict[str, dict[str, list[str]]]:
+        """Return variable names currently held in the numpy (memory) backend."""
+        return self._db['numpy'].get_pending_var_names()
+
     def close(self) -> None:
         for db in self._db.values():
             db.close()

@@ -247,3 +247,51 @@ def test_close_clears_all_internal_state(db):
     assert db._chunks == {}
     assert db._cache == {}
     assert db._metadata == {}
+
+
+def test_add_data_dtype_safe_upcast_succeeds(db):
+    """float64 existing + int32 incoming: promoted = float64 == existing → safe."""
+    data1 = np.array([[1.0, 2.0]], dtype=np.float64)
+    data2 = np.array([[3, 4]], dtype=np.int32)
+    db.add_data(DATA_ID, 'x', data1, 'train')
+    db.add_data(DATA_ID, 'x', data2, 'train')
+
+    result = db.get_data(DATA_ID, 'x', 'train', None)
+    assert result.shape[0] == 2
+
+
+def test_add_data_dtype_lossy_cast_raises(db):
+    """float32 existing + float64 incoming: promoted = float64 != float32 → ValueError."""
+    data1 = np.array([[1.0, 2.0]], dtype=np.float32)
+    data2 = np.array([[3.0, 4.0]], dtype=np.float64)
+    db.add_data(DATA_ID, 'x', data1, 'train')
+
+    with pytest.raises(ValueError, match='dtype mismatch'):
+        db.add_data(DATA_ID, 'x', data2, 'train')
+
+
+def test_add_data_dtype_lossy_cast_error_message(db):
+    """int32 existing + int64 incoming → promoted = int64 != int32 → raises."""
+    data1 = np.array([[1, 2]], dtype=np.int32)
+    data2 = np.array([[3, 4]], dtype=np.int64)
+    db.add_data(DATA_ID, 'x', data1, 'train')
+
+    with pytest.raises(ValueError, match='dtype mismatch') as exc_info:
+        db.add_data(DATA_ID, 'x', data2, 'train')
+    msg = str(exc_info.value)
+    assert 'int32' in msg
+    assert 'int64' in msg
+
+
+def test_add_data_dtype_lossy_cast_does_not_corrupt(db):
+    """Rejected dtype append must not alter existing data or metadata."""
+    data1 = np.array([[1.0, 2.0]], dtype=np.float32)
+    db.add_data(DATA_ID, 'x', data1, 'train')
+
+    with pytest.raises(ValueError):
+        db.add_data(DATA_ID, 'x', np.array([[3.0, 4.0]], dtype=np.float64), 'train')
+
+    result = db.get_data(DATA_ID, 'x', 'train', None)
+    np.testing.assert_array_equal(result, data1)
+    assert db._metadata[DATA_ID]['train']['x']['total_events'] == 1
+    assert db._metadata[DATA_ID]['train']['x']['type'] == 'float32'

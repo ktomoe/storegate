@@ -47,4 +47,4 @@ jobs:
         run: pip install ".[dev,pytorch]" --extra-index-url https://download.pytorch.org/whl/cpu
 
       - name: Run full test suite
-        run: pytest tests/ -v
+        run: pytest tests/ -v --cov --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=75

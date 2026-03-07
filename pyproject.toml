@@ -20,6 +20,9 @@ pytorch = [
 ]
 dev = [
     "pytest>=7.0",
+    "pytest-cov>=6.0",
+    "mypy>=1.10",
+    "ruff>=0.4",
 ]
 
 [tool.setuptools.packages.find]
@@ -30,4 +33,17 @@ testpaths = ["tests"]
 markers = [
     "unit: unit tests",
     "integration: integration tests",
+]
+
+[tool.coverage.run]
+source = ["storegate"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 75
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@abstractmethod",
 ]
