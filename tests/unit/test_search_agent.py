@@ -106,6 +106,21 @@ def test_cuda_ids_none_is_accepted() -> None:
     assert agent._cuda_ids is None
 
 
+def test_cuda_ids_empty_list_raises() -> None:
+    with pytest.raises(ValueError, match='must not be an empty list'):
+        SearchAgent(task=MagicMock(), cuda_ids=[])
+
+
+def test_cuda_ids_negative_value_raises() -> None:
+    with pytest.raises(ValueError, match='non-negative integers'):
+        SearchAgent(task=MagicMock(), cuda_ids=[-1, 0])
+
+
+def test_cuda_ids_non_int_value_raises() -> None:
+    with pytest.raises(TypeError, match='non-negative integers'):
+        SearchAgent(task=MagicMock(), cuda_ids=[0, '1'])  # type: ignore[list-item]
+
+
 # ---------------------------------------------------------------------------
 # Initialization — json_dump validation
 # ---------------------------------------------------------------------------

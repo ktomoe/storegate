@@ -41,6 +41,22 @@ class SearchAgent(Agent):
                 f'cuda_ids must be a list of device IDs (e.g. [0, 1]), not an int. '
                 f'Got: {cuda_ids!r}'
             )
+        if cuda_ids is not None:
+            if not isinstance(cuda_ids, list):
+                raise TypeError(
+                    f'cuda_ids must be a list of non-negative integers, got: {type(cuda_ids).__name__}.'
+                )
+            if len(cuda_ids) == 0:
+                raise ValueError('cuda_ids must not be an empty list. Use None for single-worker execution.')
+            for cuda_id in cuda_ids:
+                if not isinstance(cuda_id, int) or isinstance(cuda_id, bool):
+                    raise TypeError(
+                        f'cuda_ids must contain only non-negative integers, got: {cuda_id!r}.'
+                    )
+                if cuda_id < 0:
+                    raise ValueError(
+                        f'cuda_ids must contain only non-negative integers, got: {cuda_id!r}.'
+                    )
 
         self._task = task
         self._hps: list[dict[str, Any]] = self.all_combinations(hps)

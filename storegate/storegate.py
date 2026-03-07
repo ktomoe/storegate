@@ -418,7 +418,7 @@ class StoreGate:
         _validate_phase(phase)
         data = np.asarray(data)
         self._db.update_data(self._data_id, var_name, data, phase, index)
-        self._metadata[self._data_id]['compiled'][self.get_backend()] = False
+        self._invalidate_compiled(phase)
 
 
     @require_data_id
