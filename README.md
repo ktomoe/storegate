@@ -84,6 +84,11 @@ sg = StoreGate(output_dir='./my_data', mode='r', data_id='experiment_01')
 x_train = sg.get_data('x', phase='train')
 ```
 
+If the store was previously compiled and not modified afterwards, phase sizes are
+restored automatically for the zarr backend, so `len(sg['train'])` works
+immediately after reopening. Call `sg.compile()` again only if the store was
+never compiled, or if data changed after the last successful compile.
+
 ---
 
 ## PyTorch Training

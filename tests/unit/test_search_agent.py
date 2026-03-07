@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 import pytest
 from unittest.mock import MagicMock
 
@@ -50,6 +51,19 @@ class _SlowTask:
     def execute(self) -> dict:
         import time
         time.sleep(0.8)
+        return {}
+
+    def finalize(self) -> None:
+        pass
+
+
+class _VerySlowTask:
+    """Sleeps long enough that a real hard timeout should stop it early."""
+    def set_hps(self, hps: dict) -> None:
+        pass
+
+    def execute(self) -> dict:
+        time.sleep(5.0)
         return {}
 
     def finalize(self) -> None:
@@ -540,6 +554,17 @@ def test_job_timeout_error_entry_has_hps_and_job_id() -> None:
     assert 'hps' in entry
     assert 'job_id' in entry
     assert entry['hps'] == {'lr': 1e-3}
+
+
+def test_job_timeout_returns_promptly() -> None:
+    """Timed-out jobs should be terminated instead of running to natural completion."""
+    start = time.monotonic()
+    agent = SearchAgent(task=_VerySlowTask(), hps=None, job_timeout=0.2)
+    agent.execute()
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 2.0
+    assert 'TimeoutError' in agent._history[0]['error']
 
 
 def test_job_timeout_none_does_not_interfere_with_fast_jobs() -> None:

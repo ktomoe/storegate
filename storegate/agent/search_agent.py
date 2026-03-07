@@ -12,6 +12,24 @@ from storegate import logger
 from storegate.agent import Agent
 
 
+def _terminate_executor_processes(
+    executor: concurrent.futures.ProcessPoolExecutor,
+    kill_after: float = 1.0,
+) -> None:
+    """Terminate all worker processes currently owned by the executor."""
+    processes = list(getattr(executor, '_processes', {}).values())
+
+    for process in processes:
+        if process.is_alive():
+            process.terminate()
+
+    for process in processes:
+        process.join(timeout=kill_after)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=kill_after)
+
+
 class SearchAgent(Agent):
     """Search agent class of agent."""
     def __init__(self,
@@ -171,86 +189,93 @@ class SearchAgent(Agent):
                 hps = dict(hps)
                 hps['cuda_id'] = cuda_id
             future = executor.submit(self.execute_task, task, hps, job_id, trial_id)
-            future_to_arg[future] = job_arg
+            future_to_arg[future] = [task, hps, job_id, trial_id]
             return future
 
         args_iter = iter(enumerate(args))
 
-        with concurrent.futures.ProcessPoolExecutor(
+        executor = concurrent.futures.ProcessPoolExecutor(
             max_workers=num_workers,
             mp_context=mp.get_context(self._context),
             max_tasks_per_child=1,
-        ) as executor, tqdm(**pbar_args) as pbar:
-            # Fill the initial window (at most num_workers jobs in-flight).
-            pending: set[concurrent.futures.Future[dict[str, Any]]] = {
-                _submit(executor, ii, job_arg)
-                for ii, job_arg in islice(args_iter, num_workers)
-            }
+        )
 
-            while pending:
-                done, pending = concurrent.futures.wait(
-                    pending,
-                    timeout=self._job_timeout,
-                    return_when=concurrent.futures.FIRST_COMPLETED,
-                )
+        try:
+            with tqdm(**pbar_args) as pbar:
+                # Fill the initial window (at most num_workers jobs in-flight).
+                pending: set[concurrent.futures.Future[dict[str, Any]]] = {
+                    _submit(executor, ii, job_arg)
+                    for ii, job_arg in islice(args_iter, num_workers)
+                }
 
-                if not done:
-                    # Timeout: no job finished within job_timeout seconds.
-                    # Cancel and record all futures currently in-flight.
-                    for future in list(pending):
-                        future.cancel()
-                        _, hps, job_id, trial_id = future_to_arg.pop(future)
-                        error_msg = (
-                            f'TimeoutError: job did not complete within {self._job_timeout}s'
-                        )
-                        self._history.append({
-                            'hps': hps,
-                            'job_id': job_id,
-                            'trial_id': trial_id,
-                            'error': error_msg,
-                        })
-                        logger.error(f'Job {job_id} (trial {trial_id}) timed out after {self._job_timeout}s')
+                while pending:
+                    done, pending = concurrent.futures.wait(
+                        pending,
+                        timeout=self._job_timeout,
+                        return_when=concurrent.futures.FIRST_COMPLETED,
+                    )
+
+                    if not done:
+                        # Timeout: no job finished within job_timeout seconds.
+                        # Cancel and record all futures currently in-flight.
+                        for future in list(pending):
+                            future.cancel()
+                            _, hps, job_id, trial_id = future_to_arg.pop(future)
+                            error_msg = (
+                                f'TimeoutError: job did not complete within {self._job_timeout}s'
+                            )
+                            self._history.append({
+                                'hps': hps,
+                                'job_id': job_id,
+                                'trial_id': trial_id,
+                                'error': error_msg,
+                            })
+                            logger.error(f'Job {job_id} (trial {trial_id}) timed out after {self._job_timeout}s')
+                            pbar.update(1)
+                        # Also record timeout for jobs that were never submitted
+                        # (still waiting in the sliding-window queue).
+                        for _, job_arg in args_iter:
+                            _, hps, job_id, trial_id = job_arg
+                            error_msg = (
+                                f'TimeoutError: job did not complete within {self._job_timeout}s'
+                            )
+                            self._history.append({
+                                'hps': hps,
+                                'job_id': job_id,
+                                'trial_id': trial_id,
+                                'error': error_msg,
+                            })
+                            logger.error(f'Job {job_id} (trial {trial_id}) timed out after {self._job_timeout}s')
+                            pbar.update(1)
+                        _terminate_executor_processes(executor)
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        break
+
+                    for future in done:
+                        completed_job_arg: list[Any] | None = future_to_arg.pop(future) if future in future_to_arg else None
+                        try:
+                            self._history.append(future.result())
+                        except Exception as e:
+                            if completed_job_arg is None:
+                                hps = {}
+                                job_id = -1
+                                trial_id = None
+                            else:
+                                _, hps, job_id, trial_id = completed_job_arg
+                            error_msg = f'{type(e).__name__}: {e}'
+                            self._history.append({'hps': hps, 'job_id': job_id, 'trial_id': trial_id, 'error': error_msg})
+                            logger.error(f'Job {job_id} (trial {trial_id}) raised in worker: {error_msg}')
                         pbar.update(1)
-                    # Also record timeout for jobs that were never submitted
-                    # (still waiting in the sliding-window queue).
-                    for _, job_arg in args_iter:
-                        _, hps, job_id, trial_id = job_arg
-                        error_msg = (
-                            f'TimeoutError: job did not complete within {self._job_timeout}s'
-                        )
-                        self._history.append({
-                            'hps': hps,
-                            'job_id': job_id,
-                            'trial_id': trial_id,
-                            'error': error_msg,
-                        })
-                        logger.error(f'Job {job_id} (trial {trial_id}) timed out after {self._job_timeout}s')
-                        pbar.update(1)
-                    break
-
-                for future in done:
-                    completed_job_arg: list[Any] | None = future_to_arg.pop(future) if future in future_to_arg else None
-                    try:
-                        self._history.append(future.result())
-                    except Exception as e:
-                        if completed_job_arg is None:
-                            hps = {}
-                            job_id = -1
-                            trial_id = None
-                        else:
-                            _, hps, job_id, trial_id = completed_job_arg
-                        error_msg = f'{type(e).__name__}: {e}'
-                        self._history.append({'hps': hps, 'job_id': job_id, 'trial_id': trial_id, 'error': error_msg})
-                        logger.error(f'Job {job_id} (trial {trial_id}) raised in worker: {error_msg}')
-                    pbar.update(1)
-                    if self._disable_tqdm:
-                        logger.info(f'completed process ({len(self._history)}/{num_jobs})')
-                    # A slot is free — submit the next job immediately.
-                    try:
-                        ii, job_arg = next(args_iter)
-                        pending.add(_submit(executor, ii, job_arg))
-                    except StopIteration:
-                        pass
+                        if self._disable_tqdm:
+                            logger.info(f'completed process ({len(self._history)}/{num_jobs})')
+                        # A slot is free — submit the next job immediately.
+                        try:
+                            ii, job_arg = next(args_iter)
+                            pending.add(_submit(executor, ii, job_arg))
+                        except StopIteration:
+                            pass
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
 
     def execute_task(

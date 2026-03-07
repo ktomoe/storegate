@@ -232,10 +232,12 @@ class StoreGate:
             data_id (str or None): If provided, calls ``set_data_id()`` immediately.
 
         Note:
-            In-memory metadata (compiled flags, phase sizes) is **not** persisted to
-            disk.  When reopening an existing store (``mode='r'`` or ``mode='a'``),
-            the metadata starts empty, so ``len(sg[phase])`` will raise until
-            ``compile()`` is called.
+            ``compile()`` persists the zarr backend's compiled flag and phase sizes
+            in the store attrs. When reopening an existing store (``mode='r'`` or
+            ``mode='a'``), that zarr metadata is restored automatically, so
+            ``len(sg[phase])`` works immediately if the store was last left in a
+            compiled zarr state. Metadata for the numpy backend remains
+            in-memory-only and is not restored across sessions.
 
         Examples:
             Write, then reopen and read::
@@ -245,8 +247,9 @@ class StoreGate:
 
                 # Reopen in read-only mode
                 sg = StoreGate(output_dir='./store', mode='r', data_id='exp01')
-                sg.compile()          # required to enable len() and size queries
                 x = sg.get_data('x', phase='train')
+                # Call sg.compile() only if the store was never compiled, or was
+                # modified after the last successful compile().
         """
 
         _validate_output_dir(output_dir, mode)
@@ -291,8 +294,8 @@ class StoreGate:
         for data_id, phases in self._db.get_pending_var_names().items():
             for phase, var_names in phases.items():
                 var_list = ', '.join(var_names)
-                logger.debug(
-                    f"close(): discarding numpy data —"
+                logger.warn(
+                    f"close(): discarding unsaved numpy data."
                     f" data_id='{data_id}', phase='{phase}', vars=[{var_list}]"
                 )
         self._db.close()
@@ -526,10 +529,12 @@ class StoreGate:
         Note: consistency across phases (e.g. train vs valid) is intentionally not checked,
         as each phase may have a different number of events by design.
 
-        This method also populates in-memory size metadata (used by ``len()``).
-        Because this metadata is not persisted to disk, ``compile()`` must be
-        called after reopening an existing store before ``len(sg[phase])`` or
-        any other size-dependent operation is used.
+        This method also updates size metadata used by ``len()``. For the zarr
+        backend, the compiled flag and phase sizes are persisted in the store
+        attrs and restored on reopen. Re-run ``compile()`` after reopening only
+        if the store has never been compiled, or if data was added, updated, or
+        deleted after the last successful compile(). Metadata for the numpy
+        backend is in-memory-only and is not persisted across sessions.
 
         Args:
             show_info (bool): Print a summary table after compilation.
