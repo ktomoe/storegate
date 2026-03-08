@@ -151,6 +151,21 @@ def test_acc_with_list_outputs() -> None:
     assert all(abs(v - 1.0) < 1e-5 for v in result['acc'])
 
 
+def test_acc_with_mismatched_list_outputs_and_labels_raises() -> None:
+    em = EpochMetric(['acc'], make_ml())
+    batch = {
+        'batch_size': 1,
+        'outputs': [
+            torch.tensor([[10.0, 0.0]]),
+            torch.tensor([[10.0, 0.0]]),
+        ],
+        'labels': [torch.tensor([0])],
+        'loss': {'loss': torch.tensor(0.0)},
+    }
+    with pytest.raises(ValueError, match='same number of elements'):
+        em(batch)
+
+
 # ---------------------------------------------------------------------------
 # EpochMetric — lr metric
 # ---------------------------------------------------------------------------

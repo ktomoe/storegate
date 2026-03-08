@@ -78,6 +78,11 @@ class EpochMetric:
         if isinstance(outputs, list):
             if not isinstance(labels, list):
                 raise TypeError('labels must be a list when outputs is a list.')
+            if len(outputs) != len(labels):
+                raise ValueError(
+                    'outputs and labels must have the same number of elements '
+                    f'for multi-head accuracy, got {len(outputs)} and {len(labels)}.'
+                )
             results: list[float] = []
             for output, label in zip(outputs, labels):
                 _, preds = torch.max(output, 1)

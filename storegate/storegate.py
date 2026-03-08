@@ -557,9 +557,9 @@ class StoreGate:
         Args:
             show_info (bool): Print a summary table after compilation.
             cross_backend (bool): When True, also verify that any variable present in
-                both backends (zarr and numpy) has the same number of events,
-                dtype, and per-event shape. Raises ValueError if a mismatch is
-                found.
+                either backend (zarr or numpy) exists in the other backend and
+                has the same number of events, dtype, and per-event shape.
+                Raises ValueError if a mismatch is found.
         """
 
         data_id = self._require_current_data_id()
@@ -600,7 +600,7 @@ class StoreGate:
             self.show_info()
 
     def _check_cross_backend_consistency(self) -> None:
-        """Verify that variables present in both backends agree on metadata.
+        """Verify that variables present in either backend agree on metadata.
 
         Called from compile(cross_backend=True). Raises ValueError listing all
         mismatches found across phases before aborting.
@@ -613,7 +613,14 @@ class StoreGate:
             with self.using_backend('numpy'):
                 numpy_meta = self._db.get_metadata(data_id, phase)
 
-            for var_name in sorted(set(zarr_meta) & set(numpy_meta)):
+            for var_name in sorted(set(zarr_meta) | set(numpy_meta)):
+                if var_name not in zarr_meta:
+                    errors.append(f"  '{var_name}' in '{phase}': missing in zarr")
+                    continue
+                if var_name not in numpy_meta:
+                    errors.append(f"  '{var_name}' in '{phase}': missing in numpy")
+                    continue
+
                 zarr_info = zarr_meta[var_name]
                 numpy_info = numpy_meta[var_name]
                 diffs: list[str] = []

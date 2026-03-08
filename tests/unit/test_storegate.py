@@ -380,12 +380,17 @@ def test_compile_cross_backend_default_false_does_not_check(sg_id):
     sg_id.compile()  # should not raise (cross_backend=False)
 
 
-def test_compile_cross_backend_passes_when_no_common_vars(sg_id):
-    """Variables in only one backend are not compared."""
+def test_compile_cross_backend_raises_when_var_missing_in_numpy(sg_id):
     sg_id.add_data('x', np.array([[1.0], [2.0]]), phase='train')  # zarr only
+    with pytest.raises(ValueError, match=r"'x'.*missing in numpy"):
+        sg_id.compile(cross_backend=True)
+
+
+def test_compile_cross_backend_raises_when_var_missing_in_zarr(sg_id):
     with sg_id.using_backend('numpy'):
         sg_id.add_data('y', np.array([[9.0]]), phase='train')      # numpy only
-    sg_id.compile(cross_backend=True)  # should not raise
+    with pytest.raises(ValueError, match=r"'y'.*missing in zarr"):
+        sg_id.compile(cross_backend=True)
 
 
 def test_compile_cross_backend_passes_when_metadata_match(sg_id):
@@ -449,18 +454,22 @@ def test_compile_cross_backend_reports_all_mismatches_at_once(sg_id):
     sg_id.add_data('y', np.array([[3.0], [4.0]]), phase='train')
     with sg_id.using_backend('numpy'):
         sg_id.add_data('x', np.array([[9.0]]), phase='train')  # mismatch
-        sg_id.add_data('y', np.array([[8.0]]), phase='train')  # mismatch
+        sg_id.add_data('z', np.array([[8.0]]), phase='train')  # missing in zarr
     with pytest.raises(ValueError) as exc_info:
         sg_id.compile(cross_backend=True)
     msg = str(exc_info.value)
     assert "'x'" in msg
     assert "'y'" in msg
+    assert "'z'" in msg
+    assert 'missing in numpy' in msg
+    assert 'missing in zarr' in msg
 
 
 def test_compile_cross_backend_restores_backend_after_check(sg_id):
     """Active backend must be unchanged after cross_backend check."""
     sg_id.set_backend('numpy')
     sg_id.add_data('x', np.array([[1.0]]), phase='train')
+    sg_id.copy_to_storage('x', phase='train')
     sg_id.compile(cross_backend=True)
     assert sg_id.get_backend() == 'numpy'
 

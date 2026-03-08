@@ -414,6 +414,11 @@ def test_grid_search_agent_single_param() -> None:
 # RandomSearchAgent
 # ---------------------------------------------------------------------------
 
+def test_random_search_agent_replace_default_is_false() -> None:
+    agent = RandomSearchAgent(num_iter=2, seed=0, task=MagicMock(), hps={'a': [1, 2]})
+    assert agent._replace is False
+
+
 def test_random_search_agent_samples_n_iter() -> None:
     agent = RandomSearchAgent(
         num_iter=5, seed=42, task=MagicMock(),
@@ -439,9 +444,48 @@ def test_random_search_agent_none_hps_returns_single_empty_dict() -> None:
     assert agent._hps == [{}]
 
 
+def test_random_search_agent_replace_false_samples_without_duplicates() -> None:
+    agent = RandomSearchAgent(
+        num_iter=4,
+        seed=7,
+        task=MagicMock(),
+        hps={'a': [1, 2], 'b': [10, 20]},
+    )
+    assert len(agent._hps) == 4
+    assert len({tuple(sorted(combo.items())) for combo in agent._hps}) == 4
+
+
+def test_random_search_agent_replace_false_num_iter_exceeds_search_space_raises() -> None:
+    with pytest.raises(ValueError, match='unique combinations'):
+        RandomSearchAgent(
+            num_iter=5,
+            seed=0,
+            task=MagicMock(),
+            hps={'a': [1, 2], 'b': [10, 20]},
+        )
+
+
+def test_random_search_agent_replace_true_allows_duplicate_samples() -> None:
+    agent = RandomSearchAgent(
+        num_iter=5,
+        seed=0,
+        replace=True,
+        task=MagicMock(),
+        hps={'a': [1, 2], 'b': [10, 20]},
+    )
+    assert len(agent._hps) == 5
+    assert len({tuple(sorted(combo.items())) for combo in agent._hps}) < 5
+
+
 def test_random_search_agent_each_sample_uses_valid_values() -> None:
     valid = {'lr': [1e-3, 1e-4], 'bs': [32, 64, 128]}
-    agent = RandomSearchAgent(num_iter=20, seed=7, task=MagicMock(), hps=valid)
+    agent = RandomSearchAgent(
+        num_iter=20,
+        seed=7,
+        replace=True,
+        task=MagicMock(),
+        hps=valid,
+    )
     for combo in agent._hps:
         assert combo['lr'] in valid['lr']
         assert combo['bs'] in valid['bs']
@@ -455,6 +499,17 @@ def test_random_search_agent_num_iter_zero_raises() -> None:
 def test_random_search_agent_num_iter_non_int_raises() -> None:
     with pytest.raises(TypeError, match='positive integer'):
         RandomSearchAgent(num_iter=1.5, seed=0, task=MagicMock(), hps={'a': [1]})  # type: ignore[arg-type]
+
+
+def test_random_search_agent_replace_non_bool_raises() -> None:
+    with pytest.raises(TypeError, match='replace must be a bool'):
+        RandomSearchAgent(
+            num_iter=1,
+            seed=0,
+            replace='no',  # type: ignore[arg-type]
+            task=MagicMock(),
+            hps={'a': [1]},
+        )
 
 
 # ---------------------------------------------------------------------------

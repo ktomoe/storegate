@@ -168,12 +168,16 @@ agent = RandomSearchAgent(
     },
     num_iter=10,
     seed=42,
+    replace=False,      # default: unique combinations only
     cuda_ids=[0],
     json_dump='results.json',
 )
 agent.execute()
 agent.finalize()
 ```
+
+`replace=False` is the default and samples unique hyperparameter combinations
+without replacement. Set `replace=True` to allow duplicate combinations.
 
 `cuda_ids=None` runs jobs serially in the current process using the task's own device.
 When `cuda_ids` is a list, those values control which `cuda_id` is injected into each job's hyperparameters.
