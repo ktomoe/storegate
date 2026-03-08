@@ -365,7 +365,7 @@ def test_compile_cross_backend_passes_when_no_common_vars(sg_id):
     sg_id.compile(cross_backend=True)  # should not raise
 
 
-def test_compile_cross_backend_passes_when_counts_match(sg_id):
+def test_compile_cross_backend_passes_when_metadata_match(sg_id):
     data = np.array([[1.0], [2.0]])
     sg_id.add_data('x', data, phase='train')                      # zarr: 2
     sg_id.copy_to_memory('x', phase='train')                      # numpy: 2
@@ -401,6 +401,22 @@ def test_compile_cross_backend_error_contains_counts(sg_id):
     with sg_id.using_backend('numpy'):
         sg_id.add_data('x', np.array([[9.0]]), phase='train')             # numpy: 1
     with pytest.raises(ValueError, match=r'zarr=3.*numpy=1|numpy=1.*zarr=3'):
+        sg_id.compile(cross_backend=True)
+
+
+def test_compile_cross_backend_raises_on_type_mismatch(sg_id):
+    sg_id.add_data('x', np.array([[1.0], [2.0]], dtype=np.float32), phase='train')
+    with sg_id.using_backend('numpy'):
+        sg_id.add_data('x', np.array([[1], [2]], dtype=np.int64), phase='train')
+    with pytest.raises(ValueError, match=r'type: zarr=float32, numpy=int64'):
+        sg_id.compile(cross_backend=True)
+
+
+def test_compile_cross_backend_raises_on_shape_mismatch(sg_id):
+    sg_id.add_data('x', np.array([[1.0], [2.0]], dtype=np.float32), phase='train')
+    with sg_id.using_backend('numpy'):
+        sg_id.add_data('x', np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32), phase='train')
+    with pytest.raises(ValueError, match=r'shape: zarr=\(1,\), numpy=\(2,\)'):
         sg_id.compile(cross_backend=True)
 
 

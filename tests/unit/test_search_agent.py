@@ -413,10 +413,9 @@ def test_random_search_agent_each_sample_uses_valid_values() -> None:
 
 
 # ---------------------------------------------------------------------------
-# execute / execute_pool_jobs — parallel integration
-#
-# These tests exercise the real ProcessPoolExecutor (spawn context).
-# Task stubs are defined at module level so child processes can pickle them.
+# execute / execute_pool_jobs
+# Default ``cuda_ids=None`` runs serially in-process.
+# Parallel tests use explicit ``cuda_ids`` so child processes can pickle tasks.
 # ---------------------------------------------------------------------------
 
 def test_execute_single_job_populates_history() -> None:
@@ -479,6 +478,32 @@ def test_execute_failing_task_has_no_result_key() -> None:
     assert 'result' not in agent._history[0]
 
 
+def test_execute_without_cuda_ids_does_not_create_process_pool() -> None:
+    class _LocalTask:
+        def __init__(self) -> None:
+            self._hps: dict = {}
+            self._non_picklable = lambda value: value
+
+        def set_hps(self, hps: dict) -> None:
+            self._hps = dict(hps)
+
+        def execute(self) -> dict:
+            return {'score': self._non_picklable(self._hps['a'])}
+
+        def finalize(self) -> None:
+            pass
+
+    agent = SearchAgent(task=_LocalTask(), hps={'a': [3]})
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            'storegate.agent.search_agent.concurrent.futures.ProcessPoolExecutor',
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('must not be called')),
+        )
+        agent.execute()
+
+    assert agent._history[0]['result'] == {'score': 3}
+
+
 def test_execute_cuda_ids_injected_into_hps() -> None:
     """cuda_id is added to hps before the task sees them."""
     agent = SearchAgent(task=_HpsRecordTask(), hps=None, cuda_ids=[5])
@@ -497,6 +522,17 @@ def test_execute_cuda_ids_round_robin_two_workers() -> None:
     agent.finalize()  # sort by job_id for deterministic assertion
     assigned = [r['result']['cuda_id'] for r in agent._history]
     assert assigned == [0, 1, 0, 1]
+
+
+def test_execute_with_cuda_ids_dispatches_to_pool_jobs() -> None:
+    agent = SearchAgent(task=_HpsRecordTask(), hps=None, cuda_ids=[5])
+    agent.execute_pool_jobs = MagicMock()
+    agent.execute_serial_jobs = MagicMock()
+
+    agent.execute()
+
+    agent.execute_pool_jobs.assert_called_once_with([[agent._task, {}, 0, None]])
+    agent.execute_serial_jobs.assert_not_called()
 
 
 def test_suffix_job_id_default_is_true() -> None:

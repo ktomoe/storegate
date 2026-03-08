@@ -6,10 +6,12 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, call, patch
 
+import numpy as np
 import pytest
 
 torch = pytest.importorskip('torch')
 
+from storegate import StoreGate  # noqa: E402
 from storegate.task.dl_env import DLEnv  # noqa: E402
 from storegate.task.dl_task import DLTask  # noqa: E402
 from storegate.task.pytorch.pytorch_util import build_module  # noqa: E402
@@ -395,10 +397,57 @@ def test_predict_deletes_existing_outputs_before_running() -> None:
 
     assert result == {'test': {'acc': 0.9}}
     task._storegate.delete_data.assert_called_once_with('pred', 'test')
+    assert task._storegate.compile.call_count == 2
+    task._ml.model.eval.assert_called_once()
+    task.get_dataloader.assert_called_once_with('test')
+    task.step_epoch.assert_called_once_with(0, 'test', 'test-loader')
+
+
+def test_predict_recompiles_after_writing_new_outputs() -> None:
+    task = PytorchTask.__new__(PytorchTask)
+    task._output_var_names = compile_var_names({'test': 'pred'})
+    task._storegate = MagicMock()
+    task._storegate.get_var_names.return_value = ['x']
+    task._ml = DLEnv(model=MagicMock())
+    task.get_dataloader = MagicMock(return_value='test-loader')
+    task.step_epoch = MagicMock(return_value={'acc': 0.9})
+
+    result = task.predict()
+
+    assert result == {'test': {'acc': 0.9}}
+    task._storegate.delete_data.assert_not_called()
     task._storegate.compile.assert_called_once()
     task._ml.model.eval.assert_called_once()
     task.get_dataloader.assert_called_once_with('test')
     task.step_epoch.assert_called_once_with(0, 'test', 'test-loader')
+
+
+def test_predict_restores_storegate_compiled_state_after_writing_outputs(tmp_path) -> None:
+    sg = StoreGate(output_dir=str(tmp_path), mode='w', data_id='exp')
+    sg.add_data('x', np.arange(8, dtype=np.float32).reshape(4, 2), phase='test')
+    sg.compile()
+
+    task = PytorchTask.__new__(PytorchTask)
+    task._output_var_names = compile_var_names({'test': 'pred'})
+    task._storegate = sg
+    task._ml = DLEnv(model=MagicMock())
+    task.get_dataloader = MagicMock(return_value='test-loader')
+
+    def write_predictions(epoch: int, phase: str, dataloader: object) -> dict[str, float]:
+        assert (epoch, phase, dataloader) == (0, 'test', 'test-loader')
+        sg.add_data('pred', np.ones((4, 1), dtype=np.float32), phase='test')
+        return {'acc': 1.0}
+
+    task.step_epoch = MagicMock(side_effect=write_predictions)
+
+    result = task.predict()
+
+    assert result == {'test': {'acc': 1.0}}
+    assert len(sg['test']) == 4
+    np.testing.assert_array_equal(
+        sg.get_data('pred', 'test'),
+        np.ones((4, 1), dtype=np.float32),
+    )
 
 
 def test_step_epoch_writes_test_outputs_and_updates_progress() -> None:

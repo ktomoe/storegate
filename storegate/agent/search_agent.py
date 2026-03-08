@@ -1,7 +1,10 @@
 import concurrent.futures
+import copy
 import json
 import multiprocessing as mp
+import signal
 from collections.abc import Sequence
+from contextlib import contextmanager
 from itertools import islice, product
 from pathlib import Path
 from typing import Any
@@ -47,8 +50,11 @@ class SearchAgent(Agent):
             task: Task instance to execute.
             hps (dict): Hyperparameter search space. Each key maps to a list of candidate values.
             num_trials (int or None): Number of repeated trials per hyperparameter set.
-            cuda_ids (list[int]): List of CUDA device IDs to inject into parallel jobs.
-                The number of concurrent processes equals ``len(cuda_ids)``.
+            cuda_ids (list[int] or None): List of CUDA device IDs to inject into
+                parallel jobs. ``None`` runs all jobs serially in the current
+                process using the task's own device.
+                When a list is provided, the number of concurrent processes
+                equals ``len(cuda_ids)``.
                 For each submitted job, the agent injects one ``cuda_id`` value
                 chosen from this list according to the job's submission index.
                 This is not an exclusive worker-to-GPU binding.
@@ -167,6 +173,9 @@ class SearchAgent(Agent):
                 for trial_id in range(self._num_trials):
                     args.append([self._task, hps, job_id, trial_id])
 
+        if self._cuda_ids is None:
+            self.execute_serial_jobs(args)
+            return
         self.execute_pool_jobs(args)
 
 
@@ -177,6 +186,50 @@ class SearchAgent(Agent):
                 json.dumps(self._history, ensure_ascii=False, indent=2),
                 encoding='utf-8',
             )
+
+    @contextmanager
+    def _serial_job_timeout(self, enabled: bool) -> Any:
+        """Enforce ``job_timeout`` for serial execution when supported."""
+        if (not enabled) or self._job_timeout is None or not hasattr(signal, 'SIGALRM'):
+            yield
+            return
+
+        timeout_message = f'job did not complete within {self._job_timeout}s'
+
+        def _raise_timeout(signum: int, frame: Any) -> None:
+            raise TimeoutError(timeout_message)
+
+        previous_handler = signal.getsignal(signal.SIGALRM)
+        previous_timer = signal.getitimer(signal.ITIMER_REAL)
+        signal.signal(signal.SIGALRM, _raise_timeout)
+        signal.setitimer(signal.ITIMER_REAL, self._job_timeout)
+        try:
+            yield
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0.0)
+            signal.signal(signal.SIGALRM, previous_handler)
+            if previous_timer != (0.0, 0.0):
+                signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+
+    def execute_serial_jobs(self, args: list[list[Any]]) -> None:
+        """Execute jobs serially in the current process."""
+        num_jobs = len(args)
+        pbar_args = dict(ncols=80, total=num_jobs, disable=self._disable_tqdm)
+
+        with tqdm(**pbar_args) as pbar:
+            for task, hps, job_id, trial_id in args:
+                task_for_job = copy.deepcopy(task)
+                result = self.execute_task(
+                    task_for_job,
+                    hps,
+                    job_id,
+                    trial_id,
+                    enforce_timeout=True,
+                )
+                self._history.append(result)
+                pbar.update(1)
+                if self._disable_tqdm:
+                    logger.info(f'completed process ({len(self._history)}/{num_jobs})')
 
 
     def execute_pool_jobs(self, args: list[list[Any]]) -> None:
@@ -193,12 +246,9 @@ class SearchAgent(Agent):
         cancelled and a ``TimeoutError`` entry is appended to ``_history`` for
         each cancelled job.
         """
-        # cuda_ids=None means use the task's own device; run with a single worker.
-        cuda_ids: Sequence[int | None]
         if self._cuda_ids is None:
-            cuda_ids = [None]
-        else:
-            cuda_ids = self._cuda_ids
+            raise RuntimeError('execute_pool_jobs() requires cuda_ids to be set.')
+        cuda_ids: Sequence[int] = self._cuda_ids
         num_jobs = len(args)
         num_workers = len(cuda_ids)
 
@@ -314,6 +364,7 @@ class SearchAgent(Agent):
         hps: dict[str, Any],
         job_id: int,
         trial_id: int | None = None,
+        enforce_timeout: bool = False,
     ) -> dict[str, Any]:
         """Execute pipeline."""
         result: dict[str, Any] = {
@@ -333,8 +384,9 @@ class SearchAgent(Agent):
                     base_output_var_names,
                     job_id,
                 )
-            task.set_hps(task_hps)
-            result['result'] = task.execute()
+            with self._serial_job_timeout(enforce_timeout):
+                task.set_hps(task_hps)
+                result['result'] = task.execute()
         except Exception as e:
             result['error'] = f'{type(e).__name__}: {e}'
             logger.error(f'Job {job_id} (trial {trial_id}) failed: {result["error"]}')

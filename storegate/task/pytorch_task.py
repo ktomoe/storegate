@@ -182,6 +182,8 @@ class PytorchTask(DLTask):
         dataloader = self.get_dataloader('test')
 
         rtn_result = self.step_epoch(0, 'test', dataloader)
+        if output_var_names is not None:
+            self._storegate.compile()
 
         return {'test': rtn_result}
 

@@ -169,7 +169,8 @@ agent.execute()
 agent.finalize()
 ```
 
-`cuda_ids` controls which `cuda_id` values are injected into each job's hyperparameters.
+`cuda_ids=None` runs jobs serially in the current process using the task's own device.
+When `cuda_ids` is a list, those values control which `cuda_id` is injected into each job's hyperparameters.
 Jobs are assigned IDs in submission order; this is not an exclusive worker-to-GPU binding.
 By default, `suffix_job_id=True`, so `output_var_names` are suffixed with `_job{job_id}` to avoid collisions between parallel jobs. Set `suffix_job_id=False` only when each job writes to a different `data_id` or otherwise guarantees isolated output variable names.
 
