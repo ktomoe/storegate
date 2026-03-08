@@ -401,14 +401,14 @@ class SearchAgent(Agent):
         enforce_timeout: bool = False,
     ) -> dict[str, Any]:
         """Execute pipeline."""
+        task_hps = dict(hps)
         result: dict[str, Any] = {
-            'hps': hps,
+            'hps': task_hps,
             'job_id': job_id,
             'trial_id': trial_id,
         }
 
         try:
-            task_hps = dict(hps)
             if self._suffix_job_id and hasattr(task, '_output_var_names'):
                 base_output_var_names = task_hps.get(
                     'output_var_names',

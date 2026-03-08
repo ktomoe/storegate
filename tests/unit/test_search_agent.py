@@ -841,10 +841,11 @@ def test_execute_task_suffix_job_id_injects_suffixed_var_names() -> None:
     task.execute.return_value = {}
     agent = SearchAgent(task=task, suffix_job_id=True)
 
-    agent.execute_task(task, hps={}, job_id=5)
+    result = agent.execute_task(task, hps={}, job_id=5)
 
     passed_hps = task.set_hps.call_args[0][0]
     assert passed_hps['output_var_names'] == 'pred_job5'
+    assert result['hps']['output_var_names'] == 'pred_job5'
 
 
 def test_execute_task_suffix_job_id_uses_hps_override() -> None:
@@ -853,10 +854,28 @@ def test_execute_task_suffix_job_id_uses_hps_override() -> None:
     task.execute.return_value = {}
     agent = SearchAgent(task=task, suffix_job_id=True)
 
-    agent.execute_task(task, hps={'output_var_names': 'custom'}, job_id=0)
+    result = agent.execute_task(task, hps={'output_var_names': 'custom'}, job_id=0)
 
     passed_hps = task.set_hps.call_args[0][0]
     assert passed_hps['output_var_names'] == 'custom_job0'
+    assert result['hps']['output_var_names'] == 'custom_job0'
+
+
+def test_execute_task_suffix_job_id_records_list_override_in_result_hps() -> None:
+    task = MagicMock()
+    task._output_var_names = 'pred'
+    task.execute.return_value = {}
+    agent = SearchAgent(task=task, suffix_job_id=True)
+
+    result = agent.execute_task(
+        task,
+        hps={'output_var_names': ['custom', 'score']},
+        job_id=2,
+    )
+
+    passed_hps = task.set_hps.call_args[0][0]
+    assert passed_hps['output_var_names'] == ['custom_job2', 'score_job2']
+    assert result['hps']['output_var_names'] == ['custom_job2', 'score_job2']
 
 
 def test_execute_task_suffix_job_id_false_does_not_modify() -> None:

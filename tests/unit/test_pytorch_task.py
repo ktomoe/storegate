@@ -108,6 +108,11 @@ class _FakeTqdm:
         self.updates.append(value)
 
 
+class _PredictOnlyTask(PytorchTask):
+    def fit(self) -> dict[str, Any]:
+        return {}
+
+
 # ---------------------------------------------------------------------------
 # __init__ / compile
 # ---------------------------------------------------------------------------
@@ -298,6 +303,22 @@ def test_get_dataloader_uses_test_phase_var_names() -> None:
     assert dataset_cls.call_args.kwargs['true_var_names'] is None
 
 
+def test_get_dataloader_forces_shuffle_false_for_test() -> None:
+    task = make_runtime_task(
+        input_var_names={'train': 'x_train', 'valid': 'x_valid', 'test': 'x_test'},
+        true_var_names={'train': 'y_train', 'valid': 'y_valid', 'test': None},
+        dataloader_args={'shuffle': True, 'num_workers': 2},
+    )
+
+    with patch('storegate.task.pytorch_task.StoreGateDataset', return_value='dataset'):
+        with patch('storegate.task.pytorch_task.DataLoader', return_value='loader') as dataloader_cls:
+            task.get_dataloader('test')
+
+    kwargs = dataloader_cls.call_args.kwargs
+    assert kwargs['shuffle'] is False
+    assert kwargs['num_workers'] == 2
+
+
 def test_fit_without_valid_returns_train_history_only() -> None:
     task = PytorchTask.__new__(PytorchTask)
     task._storegate = MagicMock()
@@ -448,6 +469,35 @@ def test_predict_restores_storegate_compiled_state_after_writing_outputs(tmp_pat
         sg.get_data('pred', 'test'),
         np.ones((4, 1), dtype=np.float32),
     )
+
+
+def test_predict_preserves_test_output_order_even_when_shuffle_requested(tmp_path) -> None:
+    sg = StoreGate(output_dir=str(tmp_path), mode='w', data_id='exp')
+    inputs = np.arange(6, dtype=np.float32).reshape(6, 1)
+    sg.add_data('x', inputs, phase='test')
+    sg.compile()
+
+    task = _PredictOnlyTask(
+        storegate=sg,
+        input_var_names={'train': None, 'valid': None, 'test': 'x'},
+        true_var_names=None,
+        output_var_names={'test': 'pred'},
+        model=torch.nn.Identity,
+        loss=torch.nn.MSELoss,
+        optimizer=None,
+        num_epochs=1,
+        batch_size=1,
+        device='cpu',
+        dataloader_args={
+            'shuffle': True,
+            'generator': torch.Generator().manual_seed(0),
+        },
+    )
+    task._pbar_args = {**task._pbar_args, 'disable': True}
+
+    task.execute()
+
+    np.testing.assert_array_equal(sg.get_data('pred', 'test'), inputs)
 
 
 def test_step_epoch_writes_test_outputs_and_updates_progress() -> None:

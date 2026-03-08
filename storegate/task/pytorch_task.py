@@ -119,7 +119,12 @@ class PytorchTask(DLTask):
         if self._dataloader_args is not None:
             dataloader_args.update(self._dataloader_args)
 
-        dataloader_args.setdefault('shuffle', phase == 'train')
+        # Prediction writes outputs back to StoreGate in dataloader order,
+        # so the test phase must keep the original sample order.
+        if phase == 'test':
+            dataloader_args['shuffle'] = False
+        else:
+            dataloader_args.setdefault('shuffle', phase == 'train')
 
         return DataLoader(batch_size=self._batch_size,
                           **dataloader_args)
