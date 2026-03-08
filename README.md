@@ -139,7 +139,7 @@ agent = GridSearchAgent(
         'model__num_filters': [32, 64],
         'batch_size':         [64, 128],
     },
-    cuda_ids=[0, 1],       # one worker process per GPU
+    cuda_ids=[0, 1],       # injects cuda_id values into jobs in submission order
     suffix_job_id=True,    # writes test outputs as e.g. pred_job0, pred_job1, ...
     json_dump='results.json',
 )
@@ -168,6 +168,9 @@ agent = RandomSearchAgent(
 agent.execute()
 agent.finalize()
 ```
+
+`cuda_ids` controls which `cuda_id` values are injected into each job's hyperparameters.
+Jobs are assigned IDs in submission order; this is not an exclusive worker-to-GPU binding.
 
 **Hyperparameter key conventions:**
 

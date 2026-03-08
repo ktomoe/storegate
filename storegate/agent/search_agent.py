@@ -47,9 +47,11 @@ class SearchAgent(Agent):
             task: Task instance to execute.
             hps (dict): Hyperparameter search space. Each key maps to a list of candidate values.
             num_trials (int or None): Number of repeated trials per hyperparameter set.
-            cuda_ids (list[int]): List of CUDA device IDs to use as parallel workers.
-                Each element corresponds to one worker process, e.g. ``[0, 1, 2, 3]``.
+            cuda_ids (list[int]): List of CUDA device IDs to inject into parallel jobs.
                 The number of concurrent processes equals ``len(cuda_ids)``.
+                For each submitted job, the agent injects one ``cuda_id`` value
+                chosen from this list according to the job's submission index.
+                This is not an exclusive worker-to-GPU binding.
             disable_tqdm (bool): If True, suppress the tqdm progress bar.
             json_dump (str or None): File path to dump the result history as JSON.
             job_timeout (float or None): Maximum seconds to wait for any pending job to
