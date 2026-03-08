@@ -216,7 +216,10 @@ class PytorchTask(DLTask):
 
     def step_batch(self, data: Any, phase: str) -> dict[str, Any]:
         """Process batch data and update weights."""
-        if isinstance(data, (tuple, list)):
+        expects_labels = self._phase_expects_labels(phase)
+        if expects_labels:
+            if not isinstance(data, (tuple, list)) or len(data) != 2:
+                raise ValueError(f'labels are required for phase={phase!r}.')
             inputs, labels = data
         else:
             inputs, labels = data, None
@@ -247,6 +250,20 @@ class PytorchTask(DLTask):
             rtn_result.update(dict(outputs=outputs, labels=labels))
 
         return rtn_result
+
+    def _phase_expects_labels(self, phase: str) -> bool:
+        if phase != 'test':
+            return True
+
+        true_var_names = getattr(self, '_true_var_names', None)
+        if not isinstance(true_var_names, dict):
+            return False
+
+        return bool(
+            self._get_var_names_for_phase(
+                cast(_CompiledVarNames, true_var_names), phase
+            )
+        )
 
 
     def step_model(self, inputs: torch.Tensor | list[torch.Tensor]) -> torch.Tensor:

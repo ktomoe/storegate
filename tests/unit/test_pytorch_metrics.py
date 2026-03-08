@@ -130,6 +130,14 @@ def test_acc_zero_correct_predictions() -> None:
     assert abs(result['acc'] - 0.0) < 1e-5
 
 
+def test_acc_with_column_vector_labels() -> None:
+    em = EpochMetric(['acc'], make_ml())
+    outputs = torch.tensor([[0.0, 10.0], [10.0, 0.0]])  # predicts class 1, 0
+    labels = torch.tensor([[1], [1]])                   # true classes 1, 1
+    result = em(make_batch(outputs=outputs, labels=labels, batch_size=2))
+    assert abs(result['acc'] - 0.5) < 1e-5
+
+
 def test_acc_with_list_outputs() -> None:
     """acc with multi-head outputs (list of tensors)."""
     em = EpochMetric(['acc'], make_ml())
@@ -151,6 +159,26 @@ def test_acc_with_list_outputs() -> None:
     assert all(abs(v - 1.0) < 1e-5 for v in result['acc'])
 
 
+def test_acc_with_list_outputs_and_column_vector_labels() -> None:
+    em = EpochMetric(['acc'], make_ml())
+    outputs = [
+        torch.tensor([[10.0, 0.0], [0.0, 10.0]]),  # predicts 0, 1
+        torch.tensor([[0.0, 10.0], [10.0, 0.0]]),  # predicts 1, 0
+    ]
+    labels = [
+        torch.tensor([[0], [1]]),
+        torch.tensor([[1], [1]]),
+    ]
+    batch = {
+        'batch_size': 2,
+        'outputs': outputs,
+        'labels': labels,
+        'loss': {'loss': torch.tensor(0.0)},
+    }
+    result = em(batch)
+    assert result['acc'] == [1.0, 0.5]
+
+
 def test_acc_with_mismatched_list_outputs_and_labels_raises() -> None:
     em = EpochMetric(['acc'], make_ml())
     batch = {
@@ -164,6 +192,14 @@ def test_acc_with_mismatched_list_outputs_and_labels_raises() -> None:
     }
     with pytest.raises(ValueError, match='same number of elements'):
         em(batch)
+
+
+def test_acc_with_non_column_2d_labels_raises() -> None:
+    em = EpochMetric(['acc'], make_ml())
+    outputs = torch.tensor([[0.0, 10.0], [10.0, 0.0]])
+    labels = torch.tensor([[1, 0], [0, 1]])
+    with pytest.raises(ValueError, match='1D class-index tensor'):
+        em(make_batch(outputs=outputs, labels=labels, batch_size=2))
 
 
 # ---------------------------------------------------------------------------

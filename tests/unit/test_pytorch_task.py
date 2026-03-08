@@ -721,12 +721,50 @@ def test_set_hps_loss_valid_suffix_sets_arg():
 
 def test_step_batch_test_phase_without_labels_skips_loss():
     task = make_step_task()
+    task._true_var_names = compile_var_names(
+        {'train': 'y_train', 'valid': 'y_valid', 'test': None}
+    )
     result = task.step_batch(torch.tensor([[1.0, 2.0]]), phase='test')
 
     assert result['labels'] is None
     assert 'loss' not in result
     assert 'pred' in result
     task.step_loss.assert_not_called()
+    task.step_optimizer.assert_not_called()
+
+
+def test_step_batch_test_phase_with_multi_inputs_and_no_labels_keeps_all_inputs():
+    task = make_step_task()
+    task._true_var_names = compile_var_names(
+        {'train': 'y_train', 'valid': 'y_valid', 'test': None}
+    )
+    x0 = torch.tensor([[1.0, 2.0]])
+    x1 = torch.tensor([[3.0, 4.0]])
+
+    result = task.step_batch([x0, x1], phase='test')
+
+    assert result['labels'] is None
+    passed_inputs = task.step_model.call_args.args[0]
+    assert isinstance(passed_inputs, list)
+    assert len(passed_inputs) == 2
+    assert torch.equal(passed_inputs[0], x0)
+    assert torch.equal(passed_inputs[1], x1)
+    task.step_loss.assert_not_called()
+    task.step_optimizer.assert_not_called()
+
+
+def test_step_batch_test_phase_with_labels_still_unpacks_supervised_batch():
+    task = make_step_task()
+    task._true_var_names = compile_var_names(
+        {'train': 'y_train', 'valid': 'y_valid', 'test': 'y_test'}
+    )
+    inputs = torch.tensor([[1.0, 2.0]])
+    labels = torch.tensor([[1.0]])
+
+    result = task.step_batch([inputs, labels], phase='test')
+
+    assert torch.equal(result['labels'], labels)
+    task.step_loss.assert_called_once()
     task.step_optimizer.assert_not_called()
 
 

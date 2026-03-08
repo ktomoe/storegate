@@ -71,6 +71,19 @@ class EpochMetric:
     def loss(self, batch_result: dict[str, Any]) -> float:
         return batch_result['loss']['loss'].detach().item()  # type: ignore[no-any-return]
 
+    @staticmethod
+    def _normalize_class_labels(labels: torch.Tensor) -> torch.Tensor:
+        if labels.ndim == 2 and labels.shape[1] == 1:
+            labels = labels.squeeze(1)
+
+        if labels.ndim != 1:
+            raise ValueError(
+                'labels for acc must be a 1D class-index tensor or a column vector '
+                f'with shape (N, 1), got shape {tuple(labels.shape)}.'
+            )
+
+        return labels
+
     def acc(self, batch_result: dict[str, Any]) -> float | list[float]:
         outputs = batch_result['outputs']
         labels = batch_result['labels']
@@ -85,11 +98,13 @@ class EpochMetric:
                 )
             results: list[float] = []
             for output, label in zip(outputs, labels):
+                label = self._normalize_class_labels(label)
                 _, preds = torch.max(output, 1)
                 corrects = torch.sum(preds == label.data)
                 results.append(corrects.detach().item() / len(label))
             return results
 
+        labels = self._normalize_class_labels(labels)
         _, preds = torch.max(outputs, 1)
         corrects = torch.sum(preds == labels.data)
         return corrects.detach().item() / len(labels)
