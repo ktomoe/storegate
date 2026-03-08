@@ -104,6 +104,37 @@ class SearchAgent(Agent):
 
 
     @staticmethod
+    def _validate_hps(hps: dict[str, list[Any]] | None) -> dict[str, list[Any]] | None:
+        """Validate the hyperparameter search space.
+
+        Each entry must map a hyperparameter name to a non-empty ``list`` of
+        candidate values. This rejects common misconfigurations that would
+        otherwise silently produce zero jobs or iterate over a string one
+        character at a time.
+        """
+        if hps is None:
+            return None
+        if not isinstance(hps, dict):
+            raise TypeError(
+                f'hps must be a dict[str, list[Any]] or None, got: {type(hps).__name__}.'
+            )
+
+        validated: dict[str, list[Any]] = {}
+        for key, candidates in hps.items():
+            if not isinstance(candidates, list):
+                raise TypeError(
+                    f"hps['{key}'] must be a non-empty list of candidate values, "
+                    f'got: {type(candidates).__name__}.'
+                )
+            if len(candidates) == 0:
+                raise ValueError(
+                    f"hps['{key}'] must be a non-empty list of candidate values."
+                )
+            validated[key] = candidates
+
+        return validated
+
+    @staticmethod
     def _validate_json_dump(json_dump: str | None) -> Path | None:
         """Validate and resolve the json_dump path.
 
@@ -124,13 +155,16 @@ class SearchAgent(Agent):
         return path
 
     def all_combinations(self, hps: dict[str, list[Any]] | None) -> list[dict[str, Any]]:
+        hps = self._validate_hps(hps)
         if hps is None:
             return [{}]
 
         keys = hps.keys()
         values = hps.values()
-
-        return [dict(zip(keys, value)) for value in product(*values)]
+        combinations = [dict(zip(keys, value)) for value in product(*values)]
+        if not combinations:
+            raise ValueError('hps must generate at least one job.')
+        return combinations
 
     @staticmethod
     def _suffix_output_var_names(

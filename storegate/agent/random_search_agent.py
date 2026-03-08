@@ -30,17 +30,29 @@ class RandomSearchAgent(SearchAgent):
     """
 
     def __init__(self, num_iter: int, seed: int | None = None, **kwargs: Any) -> None:
+        if not isinstance(num_iter, int) or isinstance(num_iter, bool):
+            raise TypeError(
+                f'num_iter must be a positive integer, got: {num_iter!r}.'
+            )
+        if num_iter <= 0:
+            raise ValueError(
+                f'num_iter must be a positive integer, got: {num_iter!r}.'
+            )
         self._num_iter = num_iter
         self._seed = seed
         super().__init__(**kwargs)
 
     def all_combinations(self, hps: dict[str, list[Any]] | None) -> list[dict[str, Any]]:
         """Randomly sample ``num_iter`` combinations from the search space."""
+        hps = self._validate_hps(hps)
         if hps is None:
             return [{}]
 
         rng = random.Random(self._seed)
-        return [
+        combinations = [
             {k: rng.choice(v) for k, v in hps.items()}
             for _ in range(self._num_iter)
         ]
+        if not combinations:
+            raise ValueError('hps must generate at least one job.')
+        return combinations

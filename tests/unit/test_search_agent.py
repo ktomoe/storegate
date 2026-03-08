@@ -221,6 +221,26 @@ def test_all_combinations_count() -> None:
     assert len(result) == 6
 
 
+def test_all_combinations_empty_candidate_list_raises() -> None:
+    with pytest.raises(ValueError, match='non-empty list'):
+        SearchAgent(task=MagicMock(), hps={'lr': []})
+
+
+def test_all_combinations_string_candidate_container_raises() -> None:
+    with pytest.raises(TypeError, match='non-empty list'):
+        SearchAgent(task=MagicMock(), hps={'lr': '0.1,0.01'})  # type: ignore[arg-type]
+
+
+def test_all_combinations_scalar_candidate_container_raises() -> None:
+    with pytest.raises(TypeError, match='non-empty list'):
+        SearchAgent(task=MagicMock(), hps={'lr': 0.1})  # type: ignore[arg-type]
+
+
+def test_all_combinations_tuple_candidate_container_raises() -> None:
+    with pytest.raises(TypeError, match='non-empty list'):
+        SearchAgent(task=MagicMock(), hps={'lr': (0.1, 0.01)})  # type: ignore[arg-type]
+
+
 # ---------------------------------------------------------------------------
 # execute_task — success path
 # ---------------------------------------------------------------------------
@@ -425,6 +445,16 @@ def test_random_search_agent_each_sample_uses_valid_values() -> None:
     for combo in agent._hps:
         assert combo['lr'] in valid['lr']
         assert combo['bs'] in valid['bs']
+
+
+def test_random_search_agent_num_iter_zero_raises() -> None:
+    with pytest.raises(ValueError, match='positive integer'):
+        RandomSearchAgent(num_iter=0, seed=0, task=MagicMock(), hps={'a': [1]})
+
+
+def test_random_search_agent_num_iter_non_int_raises() -> None:
+    with pytest.raises(TypeError, match='positive integer'):
+        RandomSearchAgent(num_iter=1.5, seed=0, task=MagicMock(), hps={'a': [1]})  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
