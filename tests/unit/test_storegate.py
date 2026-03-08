@@ -1,4 +1,6 @@
 """Unit tests for StoreGate class."""
+import logging
+
 import numpy as np
 import pytest
 
@@ -7,6 +9,27 @@ from storegate.storegate import _AllPhaseAccessor, _PhaseAccessor
 
 
 DATA_ID = 'test_data'
+
+
+class _ListHandler(logging.Handler):
+    """Handler that collects formatted messages into a list."""
+    def __init__(self):
+        super().__init__()
+        self.messages: list[str] = []
+
+    def emit(self, record):
+        self.messages.append(self.format(record))
+
+
+@pytest.fixture
+def capture_log():
+    """Capture storegate logger output (propagate=False, so caplog won't work)."""
+    from storegate import logger as sg_logger
+    handler = _ListHandler()
+    handler.setLevel(logging.DEBUG)
+    sg_logger._logger.addHandler(handler)
+    yield handler.messages
+    sg_logger._logger.removeHandler(handler)
 
 
 @pytest.fixture
@@ -663,6 +686,131 @@ def test_copy_to_storage(sg_id):
     np.testing.assert_array_equal(result, data)
 
 
+# ---------------------------------------------------------------------------
+# show_info
+# ---------------------------------------------------------------------------
+
+def test_show_info_requires_data_id(sg):
+    with pytest.raises(RuntimeError, match='set_data_id'):
+        sg.show_info()
+
+
+def test_show_info_runs_without_error(sg_id):
+    sg_id.add_data('x', np.array([[1.0, 2.0], [3.0, 4.0]]), phase='train')
+    sg_id.compile()
+    sg_id.show_info()  # should not raise
+
+
+def test_show_info_displays_var_name(sg_id, capture_log):
+    sg_id.add_data('x', np.array([[1.0], [2.0]]), phase='train')
+    sg_id.compile()
+    sg_id.show_info()
+    text = '\n'.join(capture_log)
+    assert 'x' in text
+
+
+def test_show_info_displays_data_id(sg_id, capture_log):
+    sg_id.add_data('x', np.array([[1.0]]), phase='train')
+    sg_id.compile()
+    sg_id.show_info()
+    text = '\n'.join(capture_log)
+    assert DATA_ID in text
+
+
+def test_show_info_displays_compiled_status(sg_id, capture_log):
+    sg_id.add_data('x', np.array([[1.0]]), phase='train')
+    sg_id.compile()
+    sg_id.show_info()
+    text = '\n'.join(capture_log)
+    assert 'True' in text
+
+
+def test_show_info_before_compile_shows_false(sg_id, capture_log):
+    sg_id.add_data('x', np.array([[1.0]]), phase='train')
+    sg_id.show_info()
+    text = '\n'.join(capture_log)
+    assert 'False' in text
+
+
+def test_show_info_multiple_phases(sg_id, capture_log):
+    sg_id.add_data('x', np.array([[1.0]]), phase='train')
+    sg_id.add_data('x', np.array([[2.0]]), phase='valid')
+    sg_id.compile()
+    sg_id.show_info()
+    text = '\n'.join(capture_log)
+    assert 'train' in text
+    assert 'valid' in text
+
+
+def test_show_info_multiple_variables(sg_id, capture_log):
+    sg_id.add_data('x', np.array([[1.0], [2.0]]), phase='train')
+    sg_id.add_data('y', np.array([[3.0], [4.0]]), phase='train')
+    sg_id.compile()
+    sg_id.show_info()
+    text = '\n'.join(capture_log)
+    assert 'x' in text
+    assert 'y' in text
+
+
+def test_show_info_empty_storegate(sg_id, capture_log):
+    sg_id.compile()
+    sg_id.show_info()
+    text = '\n'.join(capture_log)
+    assert DATA_ID in text
+
+
+def test_show_info_displays_dtype(sg_id, capture_log):
+    sg_id.add_data('x', np.array([[1.0]], dtype=np.float32), phase='train')
+    sg_id.compile()
+    sg_id.show_info()
+    text = '\n'.join(capture_log)
+    assert 'float32' in text
+
+
+def test_show_info_displays_total_events(sg_id, capture_log):
+    sg_id.add_data('x', np.array([[1.0], [2.0], [3.0]]), phase='train')
+    sg_id.compile()
+    sg_id.show_info()
+    text = '\n'.join(capture_log)
+    assert '3' in text
+
+
+def test_show_info_displays_shape(sg_id, capture_log):
+    sg_id.add_data('x', np.array([[1.0, 2.0], [3.0, 4.0]]), phase='train')
+    sg_id.compile()
+    sg_id.show_info()
+    text = '\n'.join(capture_log)
+    assert '(2,)' in text
+
+
+def test_show_info_displays_backend(sg_id, capture_log):
+    sg_id.add_data('x', np.array([[1.0]]), phase='train')
+    sg_id.compile()
+    sg_id.show_info()
+    text = '\n'.join(capture_log)
+    assert 'zarr' in text
+
+
+def test_compile_show_info_true_calls_show_info(sg_id, capture_log):
+    sg_id.add_data('x', np.array([[1.0]]), phase='train')
+    sg_id.compile(show_info=True)
+    text = '\n'.join(capture_log)
+    assert DATA_ID in text
+    assert 'x' in text
+
+
+def test_compile_show_info_false_does_not_call_show_info(sg_id, capture_log):
+    sg_id.add_data('x', np.array([[1.0]]), phase='train')
+    sg_id.compile(show_info=False)
+    text = '\n'.join(capture_log)
+    # No table header columns should appear
+    assert 'var_name' not in text
+
+
+# ---------------------------------------------------------------------------
+# copy_to_storage (continued)
+# ---------------------------------------------------------------------------
+
 def test_copy_to_storage_already_exists_raises(tmp_path):
     # Start with numpy-only data, copy to storage, then try to copy again
     sg = StoreGate(output_dir=str(tmp_path), mode='w')
@@ -675,3 +823,67 @@ def test_copy_to_storage_already_exists_raises(tmp_path):
 
     with pytest.raises(ValueError, match='already exists'):
         sg.copy_to_storage('x', phase='train')
+
+
+# ---------------------------------------------------------------------------
+# Additional coverage tests — uncovered lines
+# ---------------------------------------------------------------------------
+
+def test_add_data_scalar_raises(sg_id):
+    """Line 407: scalar (0-dim) data must be rejected."""
+    with pytest.raises(ValueError, match='at least 1-dimensional'):
+        sg_id.add_data('x', 42, phase='train')
+
+
+def test_add_data_scalar_numpy_raises(sg_id):
+    """Line 407: 0-dim numpy array must be rejected."""
+    with pytest.raises(ValueError, match='at least 1-dimensional'):
+        sg_id.add_data('x', np.float64(3.14), phase='train')
+
+
+def test_invalid_var_name_raises(sg_id):
+    """Line 172: invalid var_name triggers ValueError."""
+    data = np.array([[1.0]])
+    with pytest.raises(ValueError, match='Invalid var_name'):
+        sg_id.add_data('bad name!', data, phase='train')
+
+
+def test_invalid_var_name_empty_raises(sg_id):
+    """Line 172: empty string var_name triggers ValueError."""
+    data = np.array([[1.0]])
+    with pytest.raises(ValueError, match='Invalid var_name'):
+        sg_id.add_data('', data, phase='train')
+
+
+def test_close_warns_unsaved_numpy_data(tmp_path, capture_log):
+    """Lines 302-304: close() warns about unsaved numpy data."""
+    sg = StoreGate(output_dir=str(tmp_path), mode='w')
+    sg.set_data_id(DATA_ID)
+    sg.set_backend('numpy')
+    sg.add_data('x', np.array([[1.0]]), phase='train')
+    sg.close()
+    text = '\n'.join(capture_log)
+    assert 'discarding unsaved numpy data' in text
+    assert 'train' in text
+    assert 'x' in text
+
+
+def test_phase_accessor_setitem_non_str_raises(sg_id):
+    """Line 37: _PhaseAccessor.__setitem__ with non-str key."""
+    accessor = sg_id['train']
+    with pytest.raises(ValueError, match='must be str'):
+        accessor[123] = np.array([[1.0]])
+
+
+def test_phase_accessor_delitem_non_str_raises(sg_id):
+    """Line 42: _PhaseAccessor.__delitem__ with non-str key."""
+    accessor = sg_id['train']
+    with pytest.raises(ValueError, match='must be str'):
+        del accessor[123]
+
+
+def test_all_phase_accessor_delitem_non_str_raises(sg_id):
+    """Line 85: _AllPhaseAccessor.__delitem__ with non-str key."""
+    accessor = _AllPhaseAccessor(sg_id)
+    with pytest.raises(ValueError, match='must be str'):
+        del accessor[123]
