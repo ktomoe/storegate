@@ -124,10 +124,18 @@ class PytorchTask(DLTask):
         return DataLoader(batch_size=self._batch_size,
                           **dataloader_args)
 
+    def _phase_has_supervised_data(self, phase: str) -> bool:
+        input_var_names = self._get_var_names_for_phase(
+            cast(_CompiledVarNames, self._input_var_names), phase
+        )
+        true_var_names = self._get_var_names_for_phase(
+            cast(_CompiledVarNames, self._true_var_names), phase
+        )
+        return bool(input_var_names) and bool(true_var_names)
 
     def fit(self) -> dict[str, Any]:
         """Train model over epoch."""
-        has_valid = bool(self._storegate.get_var_names('valid'))
+        has_valid = self._phase_has_supervised_data('valid')
 
         dataloaders: dict[str, DataLoader] = {'train': self.get_dataloader('train')}  # type: ignore[type-arg]
         if has_valid:

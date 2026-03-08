@@ -299,7 +299,8 @@ def test_get_dataloader_uses_test_phase_var_names() -> None:
 def test_fit_without_valid_returns_train_history_only() -> None:
     task = PytorchTask.__new__(PytorchTask)
     task._storegate = MagicMock()
-    task._storegate.get_var_names.return_value = []
+    task._input_var_names = compile_var_names({'train': 'x', 'valid': None, 'test': 'x_test'})
+    task._true_var_names = compile_var_names({'train': 'y', 'valid': None, 'test': None})
     task.get_dataloader = MagicMock(return_value='train-loader')
     task.step_epoch = MagicMock(side_effect=[{'loss': 0.1}, {'loss': 0.2}])
     task._ml = DLEnv(model=MagicMock())
@@ -316,7 +317,8 @@ def test_fit_without_valid_returns_train_history_only() -> None:
 def test_fit_with_valid_runs_both_phases_each_epoch() -> None:
     task = PytorchTask.__new__(PytorchTask)
     task._storegate = MagicMock()
-    task._storegate.get_var_names.side_effect = lambda phase: ['x'] if phase == 'valid' else []
+    task._input_var_names = compile_var_names({'train': 'x_train', 'valid': 'x_valid', 'test': 'x_test'})
+    task._true_var_names = compile_var_names({'train': 'y_train', 'valid': 'y_valid', 'test': None})
     task.get_dataloader = MagicMock(side_effect=['train-loader', 'valid-loader'])
     task.step_epoch = MagicMock(
         side_effect=[
@@ -343,6 +345,23 @@ def test_fit_with_valid_runs_both_phases_each_epoch() -> None:
     ]
     assert task._ml.model.train.call_count == 2
     assert task._ml.model.eval.call_count == 2
+
+
+def test_fit_ignores_valid_phase_when_only_unrelated_storegate_vars_exist() -> None:
+    task = PytorchTask.__new__(PytorchTask)
+    task._storegate = MagicMock()
+    task._input_var_names = compile_var_names({'train': 'x', 'valid': None, 'test': 'x_test'})
+    task._true_var_names = compile_var_names({'train': 'y', 'valid': None, 'test': None})
+    task.get_dataloader = MagicMock(return_value='train-loader')
+    task.step_epoch = MagicMock(side_effect=[{'loss': 0.1}])
+    task._ml = DLEnv(model=MagicMock())
+    task._num_epochs = 1
+
+    result = task.fit()
+
+    assert result == {'train': [{'loss': 0.1}]}
+    assert task.get_dataloader.call_args_list == [call('train')]
+    task._ml.model.eval.assert_not_called()
 
 
 def test_predict_skips_when_test_phase_empty() -> None:

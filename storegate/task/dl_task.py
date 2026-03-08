@@ -27,15 +27,15 @@ class DLTask(AgentTask):
                  metrics: list[str | Callable[..., Any]] | None = None,
                  num_epochs: int = 10,
                  batch_size: int = 64,
-                 preload: bool = False,
+                 execute_in_memory: bool = False,
                  **kwargs: Any):
         """Initialize a DL task.
 
         Args:
-            preload (bool): If ``True``, input and label variables are copied
-                from the zarr store into memory before training begins.
-                This avoids per-sample zarr reads during each epoch and is
-                strongly recommended when the dataset fits in RAM.
+            execute_in_memory (bool): If ``True``, required input and label
+                variables are copied from zarr into the numpy backend before
+                execution, and ``fit()`` / ``predict()`` run with the numpy
+                backend active.
                 Default: ``False``.
         """
 
@@ -66,7 +66,7 @@ class DLTask(AgentTask):
 
         self._num_epochs: int = num_epochs
         self._batch_size: int = batch_size
-        self._preload: bool = preload
+        self._execute_in_memory: bool = execute_in_memory
 
 
     def set_hps(self, params: dict[str, Any]) -> None:
@@ -106,7 +106,7 @@ class DLTask(AgentTask):
         """Execute a task.
 
         Note:
-            When ``preload=True``, model predictions written via
+            When ``execute_in_memory=True``, model predictions written via
             ``output_var_names`` are stored in the numpy (memory) backend.
             To persist them to disk, call
             ``storegate.copy_to_storage(var_name, phase='test')``
@@ -115,7 +115,7 @@ class DLTask(AgentTask):
 
         self.compile()
 
-        if self._preload:
+        if self._execute_in_memory:
             for phase in const.PHASES:
                 phase_var_names = (
                     (

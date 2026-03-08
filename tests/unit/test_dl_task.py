@@ -56,7 +56,7 @@ def test_init_default_values() -> None:
     assert task._metrics is None
     assert task._num_epochs == 10
     assert task._batch_size == 64
-    assert task._preload is False
+    assert task._execute_in_memory is False
 
 
 def test_init_none_args_become_empty_dicts() -> None:
@@ -92,7 +92,7 @@ def test_init_custom_values() -> None:
         model='Linear',
         num_epochs=20,
         batch_size=128,
-        preload=True,
+        execute_in_memory=True,
     )
     assert task._input_var_names == ['x']
     assert task._output_var_names == ['pred']
@@ -100,7 +100,7 @@ def test_init_custom_values() -> None:
     assert task._model == 'Linear'
     assert task._num_epochs == 20
     assert task._batch_size == 128
-    assert task._preload is True
+    assert task._execute_in_memory is True
 
 
 # ---------------------------------------------------------------------------
@@ -481,11 +481,11 @@ def test_predict_returns_empty_dict() -> None:
 
 
 # ---------------------------------------------------------------------------
-# execute — preload=False
+# execute — execute_in_memory=False
 # ---------------------------------------------------------------------------
 
-def test_execute_no_preload_calls_compile_fit_predict() -> None:
-    task = make_task(preload=False)
+def test_execute_without_execute_in_memory_calls_compile_fit_predict() -> None:
+    task = make_task(execute_in_memory=False)
     call_order = []
     task.compile = lambda: call_order.append('compile')
     task.fit = lambda: (call_order.append('fit'), {})[1]
@@ -494,8 +494,8 @@ def test_execute_no_preload_calls_compile_fit_predict() -> None:
     assert call_order == ['compile', 'fit', 'predict']
 
 
-def test_execute_no_preload_merges_fit_and_predict() -> None:
-    task = make_task(preload=False)
+def test_execute_without_execute_in_memory_merges_fit_and_predict() -> None:
+    task = make_task(execute_in_memory=False)
     task.compile = lambda: None
     task.fit = lambda: {'train_loss': 0.1}
     task.predict = lambda: {'test_acc': 0.9}
@@ -504,11 +504,11 @@ def test_execute_no_preload_merges_fit_and_predict() -> None:
 
 
 # ---------------------------------------------------------------------------
-# execute — preload=True
+# execute — execute_in_memory=True
 # ---------------------------------------------------------------------------
 
-def test_execute_preload_copies_vars_to_memory(tmp_path) -> None:
-    """Integration-style test: preload copies zarr data to numpy backend."""
+def test_execute_in_memory_copies_vars_to_memory(tmp_path) -> None:
+    """Integration-style test: execute_in_memory copies zarr data to numpy backend."""
     from storegate import StoreGate
 
     sg = StoreGate(output_dir=str(tmp_path), mode='w', data_id='test')
@@ -520,14 +520,14 @@ def test_execute_preload_copies_vars_to_memory(tmp_path) -> None:
         storegate=sg,
         input_var_names={'train': 'x', 'valid': None, 'test': None},
         true_var_names={'train': 'y', 'valid': None, 'test': None},
-        preload=True,
+        execute_in_memory=True,
     )
 
     task.compile_var_names()
     task.compile = lambda: None
     task.execute()
 
-    # After preload, data should exist in numpy backend
+    # After execute_in_memory, data should exist in numpy backend
     sg.set_backend('numpy')
     assert 'x' in sg.get_var_names('train')
     assert 'y' in sg.get_var_names('train')
@@ -535,8 +535,8 @@ def test_execute_preload_copies_vars_to_memory(tmp_path) -> None:
     np.testing.assert_array_equal(sg.get_data('y', 'train'), np.arange(5))
 
 
-def test_execute_preload_skips_missing_vars(tmp_path) -> None:
-    """Preload skips variables that don't exist in zarr for a given phase."""
+def test_execute_in_memory_skips_missing_vars(tmp_path) -> None:
+    """execute_in_memory skips variables that don't exist in zarr for a given phase."""
     from storegate import StoreGate
 
     sg = StoreGate(output_dir=str(tmp_path), mode='w', data_id='test')
@@ -550,7 +550,7 @@ def test_execute_preload_skips_missing_vars(tmp_path) -> None:
         storegate=sg,
         input_var_names={'train': 'x', 'valid': 'x', 'test': None},
         true_var_names={'train': 'y', 'valid': None, 'test': None},
-        preload=True,
+        execute_in_memory=True,
     )
 
     task.compile_var_names()
@@ -562,8 +562,8 @@ def test_execute_preload_skips_missing_vars(tmp_path) -> None:
     assert 'y' not in sg.get_var_names('valid')
 
 
-def test_execute_preload_deletes_existing_numpy_before_copy(tmp_path) -> None:
-    """Preload deletes existing numpy data for a var before copying from zarr."""
+def test_execute_in_memory_deletes_existing_numpy_before_copy(tmp_path) -> None:
+    """execute_in_memory deletes existing numpy data for a var before copying from zarr."""
     from storegate import StoreGate
 
     sg = StoreGate(output_dir=str(tmp_path), mode='w', data_id='test')
@@ -578,7 +578,7 @@ def test_execute_preload_deletes_existing_numpy_before_copy(tmp_path) -> None:
     task = ConcreteDLTask(
         storegate=sg,
         input_var_names={'train': 'x', 'valid': None, 'test': None},
-        preload=True,
+        execute_in_memory=True,
     )
 
     task.compile_var_names()
@@ -589,8 +589,8 @@ def test_execute_preload_deletes_existing_numpy_before_copy(tmp_path) -> None:
     np.testing.assert_array_equal(sg.get_data('x', 'train'), np.ones((3, 2)))
 
 
-def test_execute_preload_runs_fit_predict_under_numpy_backend(tmp_path) -> None:
-    """When preload=True, fit() and predict() run with numpy backend active."""
+def test_execute_in_memory_runs_fit_predict_under_numpy_backend(tmp_path) -> None:
+    """When execute_in_memory=True, fit() and predict() run with numpy backend active."""
     from storegate import StoreGate
 
     sg = StoreGate(output_dir=str(tmp_path), mode='w', data_id='test')
@@ -610,7 +610,7 @@ def test_execute_preload_runs_fit_predict_under_numpy_backend(tmp_path) -> None:
     task = TrackerTask(
         storegate=sg,
         input_var_names={'train': 'x', 'valid': None, 'test': None},
-        preload=True,
+        execute_in_memory=True,
     )
     task.compile_var_names()
     task.compile = lambda: None
@@ -619,7 +619,7 @@ def test_execute_preload_runs_fit_predict_under_numpy_backend(tmp_path) -> None:
     assert backends_during_fit == ['numpy', 'numpy']
 
 
-def test_execute_preload_uses_phase_specific_var_names(tmp_path) -> None:
+def test_execute_in_memory_uses_phase_specific_var_names(tmp_path) -> None:
     from storegate import StoreGate
 
     sg = StoreGate(output_dir=str(tmp_path), mode='w', data_id='test')
@@ -634,7 +634,7 @@ def test_execute_preload_uses_phase_specific_var_names(tmp_path) -> None:
         storegate=sg,
         input_var_names={'train': 'x_train', 'valid': 'x_valid', 'test': 'x_test'},
         true_var_names={'train': 'y_train', 'valid': 'y_valid', 'test': None},
-        preload=True,
+        execute_in_memory=True,
     )
 
     task.compile_var_names()
