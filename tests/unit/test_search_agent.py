@@ -663,3 +663,84 @@ def test_job_timeout_none_does_not_interfere_with_fast_jobs() -> None:
     agent = SearchAgent(task=_SumTask(), hps={'a': [1, 2]}, job_timeout=None)
     agent.execute()
     assert all('result' in r for r in agent._history)
+
+
+# ---------------------------------------------------------------------------
+# _suffix_output_var_names — direct unit tests (no subprocess)
+# ---------------------------------------------------------------------------
+
+def test_suffix_output_var_names_none_returns_none() -> None:
+    assert SearchAgent._suffix_output_var_names(None, 0) is None
+
+
+def test_suffix_output_var_names_str() -> None:
+    assert SearchAgent._suffix_output_var_names('pred', 3) == 'pred_job3'
+
+
+def test_suffix_output_var_names_list() -> None:
+    result = SearchAgent._suffix_output_var_names(['a', 'b'], 1)
+    assert result == ['a_job1', 'b_job1']
+
+
+def test_suffix_output_var_names_dict_with_mixed_values() -> None:
+    result = SearchAgent._suffix_output_var_names(
+        {'train': None, 'valid': ['v'], 'test': 'pred'}, 2
+    )
+    assert result == {'train': None, 'valid': ['v_job2'], 'test': 'pred_job2'}
+
+
+def test_suffix_output_var_names_unsupported_type_raises() -> None:
+    with pytest.raises(TypeError, match='got int'):
+        SearchAgent._suffix_output_var_names(42, 0)
+
+
+# ---------------------------------------------------------------------------
+# execute_task with suffix_job_id — direct unit tests (no subprocess)
+# ---------------------------------------------------------------------------
+
+def test_execute_task_suffix_job_id_injects_suffixed_var_names() -> None:
+    task = MagicMock()
+    task._output_var_names = 'pred'
+    task.execute.return_value = {}
+    agent = SearchAgent(task=task, suffix_job_id=True)
+
+    agent.execute_task(task, hps={}, job_id=5)
+
+    passed_hps = task.set_hps.call_args[0][0]
+    assert passed_hps['output_var_names'] == 'pred_job5'
+
+
+def test_execute_task_suffix_job_id_uses_hps_override() -> None:
+    task = MagicMock()
+    task._output_var_names = 'pred'
+    task.execute.return_value = {}
+    agent = SearchAgent(task=task, suffix_job_id=True)
+
+    agent.execute_task(task, hps={'output_var_names': 'custom'}, job_id=0)
+
+    passed_hps = task.set_hps.call_args[0][0]
+    assert passed_hps['output_var_names'] == 'custom_job0'
+
+
+def test_execute_task_suffix_job_id_false_does_not_modify() -> None:
+    task = MagicMock()
+    task._output_var_names = 'pred'
+    task.execute.return_value = {}
+    agent = SearchAgent(task=task, suffix_job_id=False)
+
+    agent.execute_task(task, hps={'lr': 0.1}, job_id=0)
+
+    passed_hps = task.set_hps.call_args[0][0]
+    assert 'output_var_names' not in passed_hps
+
+
+def test_execute_task_suffix_job_id_no_attr_skips() -> None:
+    """Task without _output_var_names is not modified even with suffix_job_id=True."""
+    task = MagicMock(spec=['set_hps', 'execute', 'finalize'])
+    task.execute.return_value = {}
+    agent = SearchAgent(task=task, suffix_job_id=True)
+
+    agent.execute_task(task, hps={'lr': 0.1}, job_id=0)
+
+    passed_hps = task.set_hps.call_args[0][0]
+    assert 'output_var_names' not in passed_hps
