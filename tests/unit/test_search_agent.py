@@ -114,7 +114,8 @@ def make_task() -> MagicMock:
 
 
 def _agent(**kwargs: object) -> SearchAgent:
-    defaults: dict = dict(task=MagicMock(), hps=None, num_trials=None, cuda_ids=None)
+    task = kwargs.pop('task', MagicMock(spec=['set_hps', 'execute', 'finalize']))
+    defaults: dict = dict(task=task, hps=None, num_trials=None, cuda_ids=None)
     defaults.update(kwargs)
     return SearchAgent(**defaults)
 
@@ -229,7 +230,7 @@ def test_execute_task_calls_set_hps_execute_finalize_in_order() -> None:
     task.execute.side_effect = lambda *a, **kw: call_order.append('execute') or {}
     task.finalize.side_effect = lambda *a, **kw: call_order.append('finalize')
 
-    _agent().execute_task(task, hps={}, job_id=0)
+    _agent(suffix_job_id=False).execute_task(task, hps={}, job_id=0)
 
     assert call_order == ['set_hps', 'execute', 'finalize']
 
@@ -237,7 +238,7 @@ def test_execute_task_calls_set_hps_execute_finalize_in_order() -> None:
 def test_execute_task_stores_result() -> None:
     task = MagicMock()
     task.execute.return_value = {'auc': 0.95}
-    result = _agent().execute_task(task, hps={}, job_id=0)
+    result = _agent(suffix_job_id=False).execute_task(task, hps={}, job_id=0)
     assert result['result'] == {'auc': 0.95}
 
 
@@ -256,7 +257,7 @@ def test_execute_task_catches_exception_and_stores_error() -> None:
     task = MagicMock()
     task.execute.side_effect = RuntimeError('something failed')
 
-    result = _agent().execute_task(task, hps={}, job_id=0)
+    result = _agent(suffix_job_id=False).execute_task(task, hps={}, job_id=0)
 
     assert 'error' in result
     assert 'RuntimeError' in result['error']
@@ -498,9 +499,9 @@ def test_execute_cuda_ids_round_robin_two_workers() -> None:
     assert assigned == [0, 1, 0, 1]
 
 
-def test_suffix_job_id_default_is_false() -> None:
+def test_suffix_job_id_default_is_true() -> None:
     agent = SearchAgent(task=MagicMock())
-    assert agent._suffix_job_id is False
+    assert agent._suffix_job_id is True
 
 
 def test_suffix_job_id_appends_to_string_output_var_names() -> None:

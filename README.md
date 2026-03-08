@@ -140,7 +140,7 @@ agent = GridSearchAgent(
         'batch_size':         [64, 128],
     },
     cuda_ids=[0, 1],       # injects cuda_id values into jobs in submission order
-    suffix_job_id=True,    # writes test outputs as e.g. pred_job0, pred_job1, ...
+    # default suffix_job_id=True writes test outputs as e.g. pred_job0, pred_job1, ...
     json_dump='results.json',
 )
 agent.execute()
@@ -171,6 +171,7 @@ agent.finalize()
 
 `cuda_ids` controls which `cuda_id` values are injected into each job's hyperparameters.
 Jobs are assigned IDs in submission order; this is not an exclusive worker-to-GPU binding.
+By default, `suffix_job_id=True`, so `output_var_names` are suffixed with `_job{job_id}` to avoid collisions between parallel jobs. Set `suffix_job_id=False` only when each job writes to a different `data_id` or otherwise guarantees isolated output variable names.
 
 **Hyperparameter key conventions:**
 

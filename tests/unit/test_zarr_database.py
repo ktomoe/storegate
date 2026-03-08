@@ -131,6 +131,71 @@ def test_update_data_all(zarr_db):
     np.testing.assert_array_equal(zarr_db._db[DATA_ID]['train']['x'][:], new_data)
 
 
+def test_update_data_shape_mismatch_raises_value_error(zarr_db):
+    zarr_db.add_data(DATA_ID, 'x', np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32), 'train')
+
+    with pytest.raises(ValueError, match='Shape mismatch for update'):
+        zarr_db.update_data(DATA_ID, 'x', np.array([9.0], dtype=np.float32), 'train', slice(0, 2))
+
+
+def test_update_data_shape_mismatch_does_not_mutate_existing_data(zarr_db):
+    data = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
+    zarr_db.add_data(DATA_ID, 'x', data, 'train')
+
+    with pytest.raises(ValueError):
+        zarr_db.update_data(DATA_ID, 'x', np.array([9.0], dtype=np.float32), 'train', slice(0, 2))
+
+    result = zarr_db.get_data(DATA_ID, 'x', 'train', None)
+    np.testing.assert_array_equal(result, data)
+
+
+def test_update_data_dtype_lossy_cast_raises_value_error(zarr_db):
+    zarr_db.add_data(DATA_ID, 'x', np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32), 'train')
+
+    with pytest.raises(ValueError, match='dtype mismatch for update'):
+        zarr_db.update_data(
+            DATA_ID,
+            'x',
+            np.array([[1.1, 2.2], [3.3, 4.4]], dtype=np.float64),
+            'train',
+            None,
+        )
+
+
+def test_update_data_dtype_lossy_cast_does_not_mutate_existing_data(zarr_db):
+    data = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
+    zarr_db.add_data(DATA_ID, 'x', data, 'train')
+
+    with pytest.raises(ValueError):
+        zarr_db.update_data(
+            DATA_ID,
+            'x',
+            np.array([[1.1, 2.2], [3.3, 4.4]], dtype=np.float64),
+            'train',
+            None,
+        )
+
+    result = zarr_db.get_data(DATA_ID, 'x', 'train', None)
+    np.testing.assert_array_equal(result, data)
+    assert result.dtype == np.float32
+
+
+def test_update_data_dtype_safe_cast_succeeds(zarr_db):
+    zarr_db.add_data(DATA_ID, 'x', np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64), 'train')
+
+    zarr_db.update_data(
+        DATA_ID,
+        'x',
+        np.array([[1, 2], [3, 4]], dtype=np.int32),
+        'train',
+        None,
+    )
+
+    result = zarr_db.get_data(DATA_ID, 'x', 'train', None)
+    np.testing.assert_array_equal(result, np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64))
+    assert result.dtype == np.float64
+
+
 def test_delete_data(zarr_db):
     zarr_db.add_data(DATA_ID, 'x', np.array([[1.0]]), 'train')
     zarr_db.delete_data(DATA_ID, 'x', 'train')

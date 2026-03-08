@@ -40,7 +40,7 @@ class SearchAgent(Agent):
                  disable_tqdm: bool = True,
                  json_dump: str | None = None,
                  job_timeout: float | None = None,
-                 suffix_job_id: bool = False) -> None:
+                 suffix_job_id: bool = True) -> None:
         """Initialize search agent.
 
         Args:

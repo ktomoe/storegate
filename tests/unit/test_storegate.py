@@ -238,6 +238,26 @@ def test_update_data_by_index(sg_id):
     np.testing.assert_array_equal(result, [99.0, 99.0])
 
 
+def test_update_data_shape_mismatch_raises_value_error(sg_id):
+    sg_id.add_data('x', np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32), phase='train')
+
+    with pytest.raises(ValueError, match='Shape mismatch for update'):
+        sg_id.update_data('x', np.array([9.0], dtype=np.float32), phase='train', index=slice(0, 2))
+
+
+def test_update_data_dtype_lossy_cast_raises_value_error_on_numpy_backend(sg_id):
+    with sg_id.using_backend('numpy'):
+        sg_id.add_data('x', np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32), phase='train')
+
+        with pytest.raises(ValueError, match='dtype mismatch for update'):
+            sg_id.update_data(
+                'x',
+                np.array([[1.1, 2.2], [3.3, 4.4]], dtype=np.float64),
+                phase='train',
+                index=None,
+            )
+
+
 def test_delete_data_single_phase(sg_id):
     sg_id.add_data('x', np.array([[1.0]]), phase='train')
     sg_id.delete_data('x', phase='train')

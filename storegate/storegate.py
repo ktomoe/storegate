@@ -433,7 +433,17 @@ class StoreGate:
 
     @require_data_id
     def update_data(self, var_name: str, data: Any, phase: str, index: int | slice | None = None) -> None:
-        """Update data in storegate with given options."""
+        """Update data for the selected region of an existing variable.
+
+        The incoming payload must match the selected region exactly:
+        - ``index=None`` updates the full array and requires an identical shape.
+        - ``index=int`` updates one event and requires the per-event shape.
+        - ``index=slice`` updates multiple events and requires the exact
+          ``(num_selected, *sample_shape)`` shape.
+
+        Unlike raw numpy assignment, broadcast updates are not allowed.
+        The existing dtype is preserved; lossy casts raise ``ValueError``.
+        """
         _validate_var_name(var_name)
         _validate_phase(phase)
         data = np.asarray(data)

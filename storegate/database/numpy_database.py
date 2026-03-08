@@ -78,6 +78,16 @@ class NumpyDatabase(Database):
 
     def update_data(self, data_id: str, var_name: str, data: np.ndarray, phase: str, index: int | slice | None) -> None:
         arr = self._materialize(data_id, var_name, phase)
+        meta = self._metadata[data_id][phase][var_name]
+        data = self._prepare_update_data(
+            data=data,
+            total_events=meta['total_events'],
+            sample_shape=meta['shape'],
+            existing_dtype=np.dtype(meta['type']),
+            index=index,
+            var_name=var_name,
+            phase=phase,
+        )
         arr[self._normalize_index(index)] = data
         # Collapse to single chunk so the updated array is the source of truth
         self._chunks[data_id][phase][var_name] = [arr]

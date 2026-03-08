@@ -13,6 +13,62 @@ class Database(metaclass=ABCMeta):
         """Convert None to a full-range slice."""
         return slice(0, None) if index is None else index
 
+    @classmethod
+    def _selection_shape(
+        cls,
+        total_events: int,
+        sample_shape: tuple[int, ...],
+        index: int | slice | None,
+    ) -> tuple[int, ...]:
+        """Return the exact shape required to update the selected region."""
+        normalized = cls._normalize_index(index)
+        if isinstance(normalized, int):
+            resolved_index = normalized if normalized >= 0 else total_events + normalized
+            if resolved_index < 0 or resolved_index >= total_events:
+                raise IndexError(
+                    f'index {normalized} is out of bounds for axis 0 with size {total_events}'
+                )
+            return sample_shape
+
+        start, stop, step = normalized.indices(total_events)
+        return (len(range(start, stop, step)),) + sample_shape
+
+    @classmethod
+    def _prepare_update_data(
+        cls,
+        *,
+        data: np.ndarray,
+        total_events: int,
+        sample_shape: tuple[int, ...],
+        existing_dtype: np.dtype[Any],
+        index: int | slice | None,
+        var_name: str,
+        phase: str,
+    ) -> np.ndarray:
+        """Validate update payload shape/dtype and cast safely when allowed."""
+        expected_shape = cls._selection_shape(total_events, sample_shape, index)
+
+        if data.shape != expected_shape:
+            raise ValueError(
+                f"Shape mismatch for update of '{var_name}' in '{phase}': "
+                f"expected {expected_shape}, got {data.shape}"
+            )
+
+        existing_dtype = np.dtype(existing_dtype)
+        if data.dtype != existing_dtype:
+            promoted = np.result_type(existing_dtype, data.dtype)
+            if promoted != existing_dtype:
+                raise ValueError(
+                    f"dtype mismatch for update of '{var_name}' in '{phase}': "
+                    f"existing={existing_dtype}, incoming={data.dtype.name}. "
+                    f"Updating would require a lossy cast to {existing_dtype} "
+                    f"(safe promotion would be {promoted.name}). "
+                    f"Cast your data to {existing_dtype} explicitly before updating."
+                )
+            data = data.astype(existing_dtype, copy=False)
+
+        return data
+
     @abstractmethod
     def initialize(self, data_id: str) -> None:
         """Initialize database, and set data_id."""

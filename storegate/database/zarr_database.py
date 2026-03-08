@@ -61,7 +61,17 @@ class ZarrDatabase(Database):
             db.create_array(name=var_name, data=data, chunks=chunks)
 
     def update_data(self, data_id: str, var_name: str, data: np.ndarray, phase: str, index: int | slice | None) -> None:
-        self._db[data_id][phase][var_name][self._normalize_index(index)] = data
+        arr = self._db[data_id][phase][var_name]
+        data = self._prepare_update_data(
+            data=data,
+            total_events=arr.shape[0],
+            sample_shape=tuple(arr.shape[1:]),
+            existing_dtype=arr.dtype,
+            index=index,
+            var_name=var_name,
+            phase=phase,
+        )
+        arr[self._normalize_index(index)] = data
 
     def get_data(self, data_id: str, var_name: str, phase: str, index: int | slice | None) -> np.ndarray:
         return self._db[data_id][phase][var_name][self._normalize_index(index)]  # type: ignore[no-any-return]
