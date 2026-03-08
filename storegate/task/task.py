@@ -3,9 +3,9 @@ from typing import Any
 
 
 class Task(metaclass=ABCMeta):
-    """Tasks need be inherited this base class.
+    """Abstract base class for all tasks.
 
-    Multi-ai agents assume that initialize, execute, finalize, set_hps, methods are available.
+    Search agents assume that execute, finalize, and set_hps methods are available.
     """
     @abstractmethod
     def execute(self) -> Any:

@@ -297,14 +297,16 @@ class StoreGate:
             This method is called automatically when using StoreGate as a
             context manager (``with StoreGate(...) as sg:``).
         """
-        for data_id, phases in self._db.get_pending_var_names().items():
-            for phase, var_names in phases.items():
-                var_list = ', '.join(var_names)
-                logger.warn(
-                    f"close(): discarding unsaved numpy data."
-                    f" data_id='{data_id}', phase='{phase}', vars=[{var_list}]"
-                )
-        self._db.close()
+        try:
+            for data_id, phases in self._db.get_pending_var_names().items():
+                for phase, var_names in phases.items():
+                    var_list = ', '.join(var_names)
+                    logger.warn(
+                        f"close(): discarding unsaved numpy data."
+                        f" data_id='{data_id}', phase='{phase}', vars=[{var_list}]"
+                    )
+        finally:
+            self._db.close()
 
     @require_data_id
     def __getitem__(self, item: str) -> _PhaseAccessor | _AllPhaseAccessor:

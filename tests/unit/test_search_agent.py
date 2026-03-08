@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import json
+import signal
 import time
 import pytest
 from unittest.mock import MagicMock
 
-from storegate.agent.search_agent import SearchAgent
+from storegate.agent.search_agent import SearchAgent, _terminate_executor_processes
 from storegate.agent.grid_search_agent import GridSearchAgent
 from storegate.agent.random_search_agent import RandomSearchAgent
 
@@ -64,6 +65,20 @@ class _VerySlowTask:
 
     def execute(self) -> dict:
         time.sleep(5.0)
+        return {}
+
+    def finalize(self) -> None:
+        pass
+
+
+class _CrashTask:
+    """Kills the worker process via os._exit, causing BrokenProcessPool in parent."""
+    def set_hps(self, hps: dict) -> None:
+        pass
+
+    def execute(self) -> dict:
+        import os
+        os._exit(1)
         return {}
 
     def finalize(self) -> None:
@@ -781,3 +796,161 @@ def test_execute_task_suffix_job_id_no_attr_skips() -> None:
 
     passed_hps = task.set_hps.call_args[0][0]
     assert 'output_var_names' not in passed_hps
+
+
+# ---------------------------------------------------------------------------
+# _terminate_executor_processes — lines 23-33
+# ---------------------------------------------------------------------------
+
+def test_terminate_executor_processes_terminates_alive_and_skips_dead() -> None:
+    """Alive processes are terminated; already-dead ones are skipped."""
+    proc_alive = MagicMock()
+    proc_alive.is_alive.side_effect = [True, False]  # alive → terminate, dead after join
+
+    proc_dead = MagicMock()
+    proc_dead.is_alive.return_value = False
+
+    executor = MagicMock()
+    executor._processes = {0: proc_alive, 1: proc_dead}
+
+    _terminate_executor_processes(executor)
+
+    proc_alive.terminate.assert_called_once()
+    proc_dead.terminate.assert_not_called()
+    proc_alive.join.assert_called_once()
+    proc_alive.kill.assert_not_called()
+
+
+def test_terminate_executor_processes_kills_stubborn_process() -> None:
+    """Processes that survive terminate() are forcefully killed."""
+    proc = MagicMock()
+    proc.is_alive.side_effect = [True, True]  # alive → terminate, still alive after join → kill
+
+    executor = MagicMock()
+    executor._processes = {0: proc}
+
+    _terminate_executor_processes(executor, kill_after=0.01)
+
+    proc.terminate.assert_called_once()
+    proc.kill.assert_called_once()
+    assert proc.join.call_count == 2
+
+
+def test_terminate_executor_processes_no_processes_attr() -> None:
+    """Gracefully handles executor without _processes attribute."""
+    executor = MagicMock(spec=[])  # no _processes attribute
+    _terminate_executor_processes(executor)  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# cuda_ids — non-list, non-int type (line 78)
+# ---------------------------------------------------------------------------
+
+def test_cuda_ids_tuple_raises_type_error() -> None:
+    with pytest.raises(TypeError, match='must be a list'):
+        SearchAgent(task=MagicMock(), cuda_ids=(0, 1))
+
+
+# ---------------------------------------------------------------------------
+# _serial_job_timeout — previous timer restoration (line 212)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(
+    not hasattr(signal, 'SIGALRM'),
+    reason='SIGALRM not available on this platform',
+)
+def test_serial_job_timeout_restores_previous_timer() -> None:
+    """When a pre-existing ITIMER_REAL is active, it is restored after the context exits."""
+    agent = SearchAgent(task=MagicMock(), job_timeout=10.0)
+
+    old_handler = signal.getsignal(signal.SIGALRM)
+    signal.setitimer(signal.ITIMER_REAL, 50.0)
+    try:
+        with agent._serial_job_timeout(enabled=True):
+            pass
+        remaining, _ = signal.getitimer(signal.ITIMER_REAL)
+        assert remaining > 0, 'Previous timer should have been restored'
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0.0)
+        signal.signal(signal.SIGALRM, old_handler)
+
+
+# ---------------------------------------------------------------------------
+# execute_pool_jobs without cuda_ids (line 250)
+# ---------------------------------------------------------------------------
+
+def test_execute_pool_jobs_without_cuda_ids_raises() -> None:
+    agent = SearchAgent(task=MagicMock(), cuda_ids=None)
+    with pytest.raises(RuntimeError, match='requires cuda_ids'):
+        agent.execute_pool_jobs([])
+
+
+# ---------------------------------------------------------------------------
+# Pool timeout — pending + remaining jobs (lines 301-332)
+# ---------------------------------------------------------------------------
+
+def test_pool_timeout_cancels_pending_and_remaining_jobs() -> None:
+    """With 1 worker and 3 slow jobs, timeout cancels the in-flight job
+    and records all remaining jobs as timed-out."""
+    agent = SearchAgent(
+        task=_SlowTask(),
+        hps={'a': [1, 2, 3]},
+        cuda_ids=[0],
+        job_timeout=0.1,
+    )
+    agent.execute()
+
+    assert len(agent._history) == 3
+    for entry in agent._history:
+        assert 'error' in entry
+        assert 'TimeoutError' in entry['error']
+        assert '0.1' in entry['error']
+
+
+# ---------------------------------------------------------------------------
+# Pool worker crash — future.result() raises (lines 338-347)
+# ---------------------------------------------------------------------------
+
+def test_pool_worker_crash_records_error() -> None:
+    """A worker that crashes (os._exit) is caught and recorded as an error."""
+    agent = SearchAgent(
+        task=_CrashTask(),
+        hps=None,
+        cuda_ids=[0],
+    )
+    agent.execute()
+
+    assert len(agent._history) == 1
+    assert 'error' in agent._history[0]
+
+
+def test_pool_unknown_future_in_done_uses_fallback() -> None:
+    """When a done future is not found in future_to_arg, fallback values are used."""
+    import concurrent.futures
+
+    agent = SearchAgent(task=_SumTask(), hps=None, cuda_ids=[0])
+
+    # Patch concurrent.futures.wait to inject an unknown future into 'done'
+    original_wait = concurrent.futures.wait
+
+    unknown_future: concurrent.futures.Future[dict] = concurrent.futures.Future()
+    unknown_future.set_exception(RuntimeError('ghost future'))
+    injected = False
+
+    def patched_wait(fs, **kwargs):
+        nonlocal injected
+        done, pending = original_wait(fs, **kwargs)
+        if not injected and done:
+            injected = True
+            done.add(unknown_future)
+        return done, pending
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr('concurrent.futures.wait', patched_wait)
+        agent.execute()
+
+    fallback_entries = [e for e in agent._history if e.get('job_id') == -1]
+    assert len(fallback_entries) == 1
+    assert fallback_entries[0]['hps'] == {}
+    assert fallback_entries[0]['trial_id'] is None
+    assert 'RuntimeError' in fallback_entries[0]['error']

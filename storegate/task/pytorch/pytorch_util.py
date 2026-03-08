@@ -3,11 +3,15 @@ import inspect
 from typing import Any
 
 import torch
+from torch import nn, optim
 
 from storegate import logger
 
+#: Union of types that ``build_module`` may return.
+_Module = nn.Module | optim.Optimizer
 
-def build_module(obj: Any, obj_args: dict[str, Any], modules: Any) -> Any:
+
+def build_module(obj: Any, obj_args: dict[str, Any], modules: Any) -> _Module:
     # str object
     if isinstance(obj, str):
         if modules is None:

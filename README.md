@@ -16,7 +16,13 @@ With PyTorch support:
 pip install "storegate[pytorch]"
 ```
 
-**Requirements:** Python >= 3.12
+**Requirements:** Python >= 3.12 | **Platform:** Linux
+
+> **Note — Platform support:**
+> StoreGate is developed and tested on **Linux only**.
+> Some features depend on POSIX-specific APIs (e.g. `signal.SIGALRM` for
+> serial job timeouts in `SearchAgent`). macOS may work for core
+> functionality but is not officially tested. Windows is **not supported**.
 
 ---
 
