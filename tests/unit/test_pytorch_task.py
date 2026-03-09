@@ -419,8 +419,28 @@ def test_predict_skips_when_test_phase_empty() -> None:
     task.step_epoch.assert_not_called()
 
 
+def test_predict_raises_when_test_input_var_names_are_missing() -> None:
+    task = make_loop_task(
+        input_var_names={'test': 'x'},
+        output_var_names={'test': 'pred'},
+    )
+    task._storegate.get_var_names.return_value = ['pred']
+
+    with pytest.raises(
+        ValueError,
+        match=r"missing input_var_names=\['x'\]",
+    ):
+        task.predict()
+
+    task.get_dataloader.assert_not_called()
+    task.step_epoch.assert_not_called()
+
+
 def test_predict_replaces_existing_outputs_after_running() -> None:
-    task = make_loop_task(output_var_names={'train': ['ignored'], 'test': 'pred'})
+    task = make_loop_task(
+        input_var_names={'test': 'x'},
+        output_var_names={'train': ['ignored'], 'test': 'pred'},
+    )
     task._storegate.get_var_names.side_effect = [
         ['pred', 'x'],
         ['pred', 'x'],
@@ -446,7 +466,10 @@ def test_predict_replaces_existing_outputs_after_running() -> None:
 
 
 def test_predict_recompiles_after_writing_new_outputs() -> None:
-    task = make_loop_task(output_var_names={'test': 'pred'})
+    task = make_loop_task(
+        input_var_names={'test': 'x'},
+        output_var_names={'test': 'pred'},
+    )
     task._storegate.get_var_names.side_effect = [
         ['x'],
         ['x'],
@@ -473,7 +496,11 @@ def test_predict_restores_storegate_compiled_state_after_writing_outputs(tmp_pat
     sg.add_data('x', np.arange(8, dtype=np.float32).reshape(4, 2), phase='test')
     sg.compile()
 
-    task = make_loop_task(output_var_names={'test': 'pred'}, storegate=sg)
+    task = make_loop_task(
+        input_var_names={'test': 'x'},
+        output_var_names={'test': 'pred'},
+        storegate=sg,
+    )
     task.get_dataloader.return_value = 'test-loader'
 
     def write_predictions(epoch: int, phase: str, dataloader: object) -> dict[str, float]:
@@ -500,7 +527,11 @@ def test_predict_failure_preserves_existing_outputs_and_restores_compiled_state(
     sg.add_data('pred', np.zeros((4, 1), dtype=np.float32), phase='test')
     sg.compile()
 
-    task = make_loop_task(output_var_names={'test': 'pred'}, storegate=sg)
+    task = make_loop_task(
+        input_var_names={'test': 'x'},
+        output_var_names={'test': 'pred'},
+        storegate=sg,
+    )
     task.get_dataloader.return_value = 'test-loader'
 
     def fail_predictions(epoch: int, phase: str, dataloader: object) -> dict[str, float]:
@@ -527,7 +558,11 @@ def test_predict_promotion_failure_preserves_existing_outputs_and_restores_compi
     sg.add_data('pred', np.zeros((4, 1), dtype=np.float32), phase='test')
     sg.compile()
 
-    task = make_loop_task(output_var_names={'test': 'pred'}, storegate=sg)
+    task = make_loop_task(
+        input_var_names={'test': 'x'},
+        output_var_names={'test': 'pred'},
+        storegate=sg,
+    )
     task.get_dataloader.return_value = 'test-loader'
 
     def write_predictions(epoch: int, phase: str, dataloader: object) -> dict[str, float]:
@@ -562,7 +597,11 @@ def test_predict_missing_tmp_outputs_preserves_existing_outputs_and_restores_com
     sg.add_data('pred', np.zeros((4, 1), dtype=np.float32), phase='test')
     sg.compile()
 
-    task = make_loop_task(output_var_names={'test': 'pred'}, storegate=sg)
+    task = make_loop_task(
+        input_var_names={'test': 'x'},
+        output_var_names={'test': 'pred'},
+        storegate=sg,
+    )
     task.get_dataloader.return_value = 'test-loader'
     task.step_epoch.return_value = {'acc': 1.0}
 

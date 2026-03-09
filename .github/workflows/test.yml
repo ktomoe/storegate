@@ -53,7 +53,7 @@ jobs:
         run: pip install ".[dev]" pip-audit
 
       - name: Run ruff
-        run: ruff check storegate/
+        run: ruff check storegate/ tests/
 
       - name: Run mypy
         run: mypy storegate/ --ignore-missing-imports

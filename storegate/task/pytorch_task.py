@@ -147,6 +147,28 @@ class PytorchTask(DLTask):
 
         self._storegate.compile()
 
+    def _validate_test_inputs_exist(self, existing_var_names: set[str]) -> None:
+        raw_input_var_names = getattr(self, '_input_var_names', None)
+        if not isinstance(raw_input_var_names, dict):
+            raise ValueError("predict() requires input_var_names for the 'test' phase.")
+
+        input_var_names = self._get_var_names_for_phase(
+            cast(_CompiledVarNames, raw_input_var_names),
+            'test',
+        )
+        if not input_var_names:
+            raise ValueError("predict() requires input_var_names for the 'test' phase.")
+
+        missing_input_var_names = [
+            var_name for var_name in input_var_names
+            if var_name not in existing_var_names
+        ]
+        if missing_input_var_names:
+            raise ValueError(
+                "predict() requires test input_var_names to exist in StoreGate. "
+                f"missing input_var_names={missing_input_var_names}"
+            )
+
     def compile(self) -> None:
         """Compile pytorch ml objects."""
         self.compile_device()
@@ -251,9 +273,11 @@ class PytorchTask(DLTask):
         if self._delete_test_outputs(tmp_output_var_names):
             self._storegate.compile()
 
-        if not self._storegate.get_var_names('test'):
+        existing_var_names = set(self._storegate.get_var_names('test'))
+        if not existing_var_names:
             logger.warn("predict() skipped: no variables found in the 'test' phase.")
             return {'test': {}}
+        self._validate_test_inputs_exist(existing_var_names)
 
         self._ml.model.eval()
         dataloader = self.get_dataloader('test')
