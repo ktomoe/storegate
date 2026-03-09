@@ -101,6 +101,21 @@ class _HpsRecordTask:
         pass
 
 
+class _LargeResultTask:
+    """Returns a payload large enough to block if the parent never drains the pipe."""
+    def __init__(self, payload_size: int = 2 * 1024 * 1024) -> None:
+        self._payload_size = payload_size
+
+    def set_hps(self, hps: dict) -> None:
+        pass
+
+    def execute(self) -> dict:
+        return {'blob': 'x' * self._payload_size}
+
+    def finalize(self) -> None:
+        pass
+
+
 class _OutputVarNamesTask:
     """Records output_var_names after SearchAgent-driven HP injection."""
     def __init__(self, output_var_names: object) -> None:
@@ -157,6 +172,38 @@ def test_cuda_ids_invalid_values_raise(
 ) -> None:
     with pytest.raises(error_type, match=message):
         SearchAgent(task=MagicMock(), cuda_ids=cuda_ids)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Initialization — num_trials validation
+# ---------------------------------------------------------------------------
+
+def test_num_trials_none_is_accepted() -> None:
+    assert _agent()._num_trials is None
+
+
+def test_num_trials_positive_int_is_accepted() -> None:
+    agent = SearchAgent(task=MagicMock(), num_trials=3)
+    assert agent._num_trials == 3
+
+
+@pytest.mark.parametrize(
+    ('num_trials', 'error_type'),
+    [
+        (True, TypeError),
+        (False, TypeError),
+        (0, ValueError),
+        (-1, ValueError),
+        (1.5, TypeError),
+        ('3', TypeError),
+    ],
+)
+def test_num_trials_invalid_values_raise(
+    num_trials: object,
+    error_type: type[Exception],
+) -> None:
+    with pytest.raises(error_type, match='positive integer or None'):
+        SearchAgent(task=MagicMock(), num_trials=num_trials)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -1040,3 +1087,19 @@ def test_pool_worker_crash_records_error() -> None:
     assert len(agent._history) == 1
     assert 'error' in agent._history[0]
     assert 'exit code' in agent._history[0]['error']
+
+
+def test_pool_large_result_is_received_without_timeout() -> None:
+    """Large results must be drained from the pipe before waiting only on process exit."""
+    payload_size = 2 * 1024 * 1024
+    agent = SearchAgent(
+        task=_LargeResultTask(payload_size=payload_size),
+        hps=None,
+        cuda_ids=[0],
+        job_timeout=1.0,
+    )
+    agent.execute()
+
+    assert len(agent._history) == 1
+    assert 'error' not in agent._history[0]
+    assert len(agent._history[0]['result']['blob']) == payload_size

@@ -51,6 +51,23 @@ def _close_finished_job(job: _RunningJob) -> None:
     job.process.close()
 
 
+def _child_process_error(job: _RunningJob) -> dict[str, Any]:
+    """Build and log a standardized error result for a crashed worker."""
+    error_msg = (
+        'ChildProcessError: worker exited before returning '
+        f'a result (exit code {job.process.exitcode}).'
+    )
+    logger.error(
+        f'Job {job.job_id} (trial {job.trial_id}) raised in worker: {error_msg}'
+    )
+    return {
+        'hps': job.hps,
+        'job_id': job.job_id,
+        'trial_id': job.trial_id,
+        'error': error_msg,
+    }
+
+
 def _execute_task_in_subprocess(
     task: Any,
     hps: dict[str, Any],
@@ -132,6 +149,20 @@ class SearchAgent(Agent):
             cls._validate_cuda_id(cuda_id)
         return cuda_ids
 
+    @staticmethod
+    def _validate_num_trials(num_trials: int | None) -> int | None:
+        if num_trials is None:
+            return None
+        if not isinstance(num_trials, int) or isinstance(num_trials, bool):
+            raise TypeError(
+                f'num_trials must be a positive integer or None, got: {num_trials!r}.'
+            )
+        if num_trials <= 0:
+            raise ValueError(
+                f'num_trials must be a positive integer or None, got: {num_trials!r}.'
+            )
+        return num_trials
+
     def __init__(self,
                  task: Any = None,
                  hps: dict[str, list[Any]] | None = None,
@@ -169,7 +200,7 @@ class SearchAgent(Agent):
         """
         self._task = task
         self._hps: list[dict[str, Any]] = self.all_combinations(hps)
-        self._num_trials = num_trials
+        self._num_trials = self._validate_num_trials(num_trials)
         self._cuda_ids = self._validate_cuda_ids(cuda_ids)
         self._disable_tqdm = disable_tqdm
         self._json_dump: Path | None = self._validate_json_dump(json_dump)
@@ -377,7 +408,7 @@ class SearchAgent(Agent):
             ii: int,
             job_arg: list[Any],
             running_jobs: dict[int, _RunningJob],
-        ) -> None:
+        ) -> _RunningJob:
             task, hps, job_id, trial_id = job_arg
             task_hps = dict(hps)
             cuda_id = cuda_ids[ii % num_workers]
@@ -397,37 +428,41 @@ class SearchAgent(Agent):
             )
             process.start()
             child_pipe.close()
-            running_jobs[process.sentinel] = _RunningJob(
+            job = _RunningJob(
                 process=process,
                 result_pipe=parent_pipe,
                 hps=task_hps,
                 job_id=job_id,
                 trial_id=trial_id,
             )
+            running_jobs[process.sentinel] = job
+            return job
 
         args_iter = iter(enumerate(args))
-        running_jobs: dict[int, _RunningJob] = {}
+        running_jobs_by_sentinel: dict[int, _RunningJob] = {}
+        running_jobs_by_pipe: dict[Connection, _RunningJob] = {}
 
         try:
             with tqdm(**pbar_args) as pbar:
-                while len(running_jobs) < num_workers:
+                while len(running_jobs_by_sentinel) < num_workers:
                     try:
                         ii, job_arg = next(args_iter)
                     except StopIteration:
                         break
-                    _submit(ii, job_arg, running_jobs)
+                    job = _submit(ii, job_arg, running_jobs_by_sentinel)
+                    running_jobs_by_pipe[job.result_pipe] = job
 
-                while running_jobs:
-                    ready_sentinels = wait(
-                        list(running_jobs),
+                while running_jobs_by_sentinel:
+                    ready_objects = wait(
+                        list(running_jobs_by_pipe) + list(running_jobs_by_sentinel),
                         timeout=self._job_timeout,
                     )
 
-                    if not ready_sentinels:
+                    if not ready_objects:
                         error_msg = (
                             f'TimeoutError: job did not complete within {self._job_timeout}s'
                         )
-                        for job in running_jobs.values():
+                        for job in running_jobs_by_sentinel.values():
                             self._history.append({
                                 'hps': job.hps,
                                 'job_id': job.job_id,
@@ -454,54 +489,57 @@ class SearchAgent(Agent):
                             pbar.update(1)
                         break
 
-                    for sentinel in ready_sentinels:
-                        job = running_jobs.pop(cast(int, sentinel))
-                        if job.result_pipe.poll():
-                            try:
-                                self._history.append(job.result_pipe.recv())
-                            except EOFError:
-                                error_msg = (
-                                    'ChildProcessError: worker exited before returning '
-                                    f'a result (exit code {job.process.exitcode}).'
-                                )
-                                self._history.append({
-                                    'hps': job.hps,
-                                    'job_id': job.job_id,
-                                    'trial_id': job.trial_id,
-                                    'error': error_msg,
-                                })
-                                logger.error(
-                                    f'Job {job.job_id} (trial {job.trial_id}) raised in '
-                                    f'worker: {error_msg}'
-                                )
-                        else:
-                            error_msg = (
-                                'ChildProcessError: worker exited before returning '
-                                f'a result (exit code {job.process.exitcode}).'
-                            )
-                            self._history.append({
-                                'hps': job.hps,
-                                'job_id': job.job_id,
-                                'trial_id': job.trial_id,
-                                'error': error_msg,
-                            })
-                            logger.error(
-                                f'Job {job.job_id} (trial {job.trial_id}) raised in '
-                                f'worker: {error_msg}'
-                            )
+                    ready_pipes = [
+                        cast(Connection, ready)
+                        for ready in ready_objects
+                        if ready in running_jobs_by_pipe
+                    ]
+                    ready_sentinels = [
+                        cast(int, ready)
+                        for ready in ready_objects
+                        if ready in running_jobs_by_sentinel
+                    ]
+
+                    for pipe in ready_pipes:
+                        job = running_jobs_by_pipe.pop(pipe, None)
+                        if job is None:
+                            continue
+                        running_jobs_by_sentinel.pop(job.process.sentinel, None)
+                        try:
+                            self._history.append(pipe.recv())
+                        except EOFError:
+                            self._history.append(_child_process_error(job))
                         _close_finished_job(job)
                         pbar.update(1)
                         if self._disable_tqdm:
                             logger.info(f'completed process ({len(self._history)}/{num_jobs})')
 
-                    while len(running_jobs) < num_workers:
+                    for sentinel in ready_sentinels:
+                        job = running_jobs_by_sentinel.pop(sentinel, None)
+                        if job is None:
+                            continue
+                        running_jobs_by_pipe.pop(job.result_pipe, None)
+                        if job.result_pipe.poll():
+                            try:
+                                self._history.append(job.result_pipe.recv())
+                            except EOFError:
+                                self._history.append(_child_process_error(job))
+                        else:
+                            self._history.append(_child_process_error(job))
+                        _close_finished_job(job)
+                        pbar.update(1)
+                        if self._disable_tqdm:
+                            logger.info(f'completed process ({len(self._history)}/{num_jobs})')
+
+                    while len(running_jobs_by_sentinel) < num_workers:
                         try:
                             ii, job_arg = next(args_iter)
                         except StopIteration:
                             break
-                        _submit(ii, job_arg, running_jobs)
+                        job = _submit(ii, job_arg, running_jobs_by_sentinel)
+                        running_jobs_by_pipe[job.result_pipe] = job
         finally:
-            _shutdown_running_jobs(running_jobs)
+            _shutdown_running_jobs(running_jobs_by_sentinel)
 
 
     def execute_task(
