@@ -605,6 +605,50 @@ class StoreGate:
             raise ValueError(f"Inconsistent event counts in '{phase}' phase:\n{detail}")
         return phase_events[0] if phase_events else None
 
+    @staticmethod
+    def _cross_backend_metadata_errors(
+        zarr_meta: dict[str, Any],
+        numpy_meta: dict[str, Any],
+        phase: str,
+    ) -> list[str]:
+        """Return metadata mismatch messages for one phase."""
+        errors: list[str] = []
+
+        for var_name in sorted(set(zarr_meta) | set(numpy_meta)):
+            if var_name not in zarr_meta:
+                errors.append(f"  '{var_name}' in '{phase}': missing in zarr")
+                continue
+            if var_name not in numpy_meta:
+                errors.append(f"  '{var_name}' in '{phase}': missing in numpy")
+                continue
+
+            zarr_info = zarr_meta[var_name]
+            numpy_info = numpy_meta[var_name]
+            diffs: list[str] = []
+
+            if zarr_info['total_events'] != numpy_info['total_events']:
+                diffs.append(
+                    f"events: zarr={zarr_info['total_events']}, "
+                    f"numpy={numpy_info['total_events']}"
+                )
+            if zarr_info['type'] != numpy_info['type']:
+                diffs.append(
+                    f"type: zarr={zarr_info['type']}, "
+                    f"numpy={numpy_info['type']}"
+                )
+            if zarr_info['shape'] != numpy_info['shape']:
+                diffs.append(
+                    f"shape: zarr={zarr_info['shape']}, "
+                    f"numpy={numpy_info['shape']}"
+                )
+
+            if diffs:
+                errors.append(
+                    f"  '{var_name}' in '{phase}': " + ', '.join(diffs)
+                )
+
+        return errors
+
     def _check_cross_backend_consistency(self) -> None:
         """Verify that variables present in either backend agree on metadata.
 
@@ -618,43 +662,61 @@ class StoreGate:
                 zarr_meta = self._db.get_metadata(data_id, phase)
             with self.using_backend('numpy'):
                 numpy_meta = self._db.get_metadata(data_id, phase)
-
-            for var_name in sorted(set(zarr_meta) | set(numpy_meta)):
-                if var_name not in zarr_meta:
-                    errors.append(f"  '{var_name}' in '{phase}': missing in zarr")
-                    continue
-                if var_name not in numpy_meta:
-                    errors.append(f"  '{var_name}' in '{phase}': missing in numpy")
-                    continue
-
-                zarr_info = zarr_meta[var_name]
-                numpy_info = numpy_meta[var_name]
-                diffs: list[str] = []
-
-                if zarr_info['total_events'] != numpy_info['total_events']:
-                    diffs.append(
-                        f"events: zarr={zarr_info['total_events']}, "
-                        f"numpy={numpy_info['total_events']}"
-                    )
-                if zarr_info['type'] != numpy_info['type']:
-                    diffs.append(
-                        f"type: zarr={zarr_info['type']}, "
-                        f"numpy={numpy_info['type']}"
-                    )
-                if zarr_info['shape'] != numpy_info['shape']:
-                    diffs.append(
-                        f"shape: zarr={zarr_info['shape']}, "
-                        f"numpy={numpy_info['shape']}"
-                    )
-
-                if diffs:
-                    errors.append(
-                        f"  '{var_name}' in '{phase}': " + ', '.join(diffs)
-                    )
+            errors.extend(
+                self._cross_backend_metadata_errors(zarr_meta, numpy_meta, phase)
+            )
 
         if errors:
             raise ValueError(
                 "Cross-backend inconsistency detected:\n" + "\n".join(errors)
+            )
+
+    @require_data_id
+    def verify_backend_data(self, phase: str = 'all') -> None:
+        """Verify that zarr and numpy backends contain identical array values.
+
+        This method first checks cross-backend metadata parity (variable names,
+        event counts, dtypes, and shapes), then loads matching variables from
+        both backends and compares their contents with
+        ``np.array_equal(..., equal_nan=True)``.
+
+        Note:
+            This is stricter and potentially more expensive than
+            ``compile(cross_backend=True)``, which validates metadata only.
+        """
+        _validate_phase(phase, allow_all=True)
+        data_id = self._require_current_data_id()
+        errors: list[str] = []
+
+        for iphase in self._target_phases(phase):
+            with self.using_backend('zarr'):
+                zarr_meta = self._db.get_metadata(data_id, iphase)
+            with self.using_backend('numpy'):
+                numpy_meta = self._db.get_metadata(data_id, iphase)
+
+            phase_errors = self._cross_backend_metadata_errors(
+                zarr_meta,
+                numpy_meta,
+                iphase,
+            )
+            errors.extend(phase_errors)
+            if phase_errors:
+                continue
+
+            for var_name in sorted(zarr_meta):
+                with self.using_backend('zarr'):
+                    zarr_data = self.get_data(var_name, iphase)
+                with self.using_backend('numpy'):
+                    numpy_data = self.get_data(var_name, iphase)
+
+                if not np.array_equal(zarr_data, numpy_data, equal_nan=True):
+                    errors.append(
+                        f"  '{var_name}' in '{iphase}': data values differ"
+                    )
+
+        if errors:
+            raise ValueError(
+                "Cross-backend data mismatch detected:\n" + "\n".join(errors)
             )
 
 

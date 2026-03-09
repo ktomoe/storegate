@@ -196,6 +196,12 @@ When `cuda_ids` is a list, those values control which `cuda_id` is injected into
 Jobs are assigned IDs in submission order; this is not an exclusive worker-to-GPU binding.
 By default, `suffix_job_id=True`, so `output_var_names` are suffixed with `_job{job_id}_trial{trial_id}` to avoid collisions between parallel jobs and repeated trials. When `num_trials` is not set, the implicit single trial uses `trial0`. Set `suffix_job_id=False` only when each job writes to a different `data_id` or otherwise guarantees isolated output variable names.
 
+Parallel execution with `cuda_ids=[...]` uses Python multiprocessing with the
+`spawn` start method. Run it from a normal importable Python script (for
+example, `python train.py`). Interactive contexts such as REPL, `python -c`,
+stdin execution, and some notebook environments may fail because worker
+processes cannot re-import `__main__`.
+
 **Hyperparameter key conventions:**
 
 | Prefix | Target |

@@ -588,6 +588,71 @@ def test_compile_cross_backend_failure_keeps_len_unavailable(sg_id):
 
 
 # ---------------------------------------------------------------------------
+# verify_backend_data
+# ---------------------------------------------------------------------------
+
+def test_verify_backend_data_passes_when_values_match(sg_id):
+    data = np.array([[1.0], [2.0]], dtype=np.float32)
+    sg_id.add_data('x', data, phase='train')
+    sg_id.copy_to_memory('x', phase='train')
+
+    sg_id.verify_backend_data()
+
+
+def test_verify_backend_data_treats_nan_values_as_equal(sg_id):
+    data = np.array([[np.nan], [1.0]], dtype=np.float32)
+    sg_id.add_data('x', data, phase='train')
+    sg_id.copy_to_memory('x', phase='train')
+
+    sg_id.verify_backend_data()
+
+
+def test_verify_backend_data_detects_value_mismatch_even_when_metadata_match(sg_id):
+    data = np.array([[1.0], [2.0]], dtype=np.float32)
+    sg_id.add_data('x', data, phase='train')
+    sg_id.copy_to_memory('x', phase='train')
+
+    with sg_id.using_backend('numpy'):
+        sg_id.update_data(
+            'x',
+            np.array([9.0], dtype=np.float32),
+            phase='train',
+            index=1,
+        )
+
+    with pytest.raises(ValueError, match='data values differ'):
+        sg_id.verify_backend_data()
+
+
+def test_verify_backend_data_phase_allows_scoped_verification(sg_id):
+    train_data = np.array([[1.0], [2.0]], dtype=np.float32)
+    test_data = np.array([[3.0]], dtype=np.float32)
+    sg_id.add_data('x', train_data, phase='train')
+    sg_id.add_data('x', test_data, phase='test')
+    sg_id.copy_to_memory('x', phase='train')
+    sg_id.copy_to_memory('x', phase='test')
+
+    with sg_id.using_backend('numpy'):
+        sg_id.update_data(
+            'x',
+            np.array([7.0], dtype=np.float32),
+            phase='test',
+            index=0,
+        )
+
+    sg_id.verify_backend_data(phase='train')
+    with pytest.raises(ValueError, match="'x' in 'test': data values differ"):
+        sg_id.verify_backend_data(phase='test')
+
+
+def test_verify_backend_data_reports_metadata_mismatch(sg_id):
+    sg_id.add_data('x', np.array([[1.0], [2.0]]), phase='train')
+
+    with pytest.raises(ValueError, match='missing in numpy'):
+        sg_id.verify_backend_data()
+
+
+# ---------------------------------------------------------------------------
 # __getitem__ / _PhaseAccessor / _VarAccessor
 # ---------------------------------------------------------------------------
 
