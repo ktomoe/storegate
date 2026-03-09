@@ -60,6 +60,19 @@ class PytorchTask(DLTask):
             return None
         return [f'tmp_{var_name}' for var_name in output_var_names]
 
+    @staticmethod
+    def _backup_test_output_var_name(
+        output_var_name: str,
+        reserved_names: set[str],
+    ) -> str:
+        candidate = f'backup_{output_var_name}'
+        suffix = 0
+        while candidate in reserved_names:
+            suffix += 1
+            candidate = f'backup_{output_var_name}_{suffix}'
+        reserved_names.add(candidate)
+        return candidate
+
     def _delete_test_outputs(self, output_var_names: list[str] | None) -> bool:
         if output_var_names is None:
             return False
@@ -76,16 +89,61 @@ class PytorchTask(DLTask):
         tmp_output_var_names: list[str],
         output_var_names: list[str],
     ) -> None:
-        existing_var_names = set(self._storegate.get_var_names('test'))
-        for output_var_name in output_var_names:
-            if output_var_name in existing_var_names:
-                self._storegate.delete_data(output_var_name, 'test')
+        reserved_names = (
+            set(self._storegate.get_var_names('test'))
+            | set(tmp_output_var_names)
+            | set(output_var_names)
+        )
+        backup_var_names: dict[str, str] = {}
+        promoted_var_names: set[str] = set()
 
-        for tmp_output_var_name, output_var_name in zip(
-            tmp_output_var_names,
-            output_var_names,
-        ):
-            self._storegate.rename_data(tmp_output_var_name, output_var_name, 'test')
+        try:
+            for output_var_name in output_var_names:
+                existing_var_names = set(self._storegate.get_var_names('test'))
+                if output_var_name not in existing_var_names:
+                    continue
+
+                backup_var_name = self._backup_test_output_var_name(
+                    output_var_name,
+                    reserved_names,
+                )
+                self._storegate.rename_data(output_var_name, backup_var_name, 'test')
+                backup_var_names[output_var_name] = backup_var_name
+
+            for tmp_output_var_name, output_var_name in zip(
+                tmp_output_var_names,
+                output_var_names,
+            ):
+                self._storegate.rename_data(tmp_output_var_name, output_var_name, 'test')
+                promoted_var_names.add(output_var_name)
+
+        except Exception:
+            existing_var_names = set(self._storegate.get_var_names('test'))
+
+            for output_var_name in promoted_var_names:
+                if output_var_name in existing_var_names:
+                    self._storegate.delete_data(output_var_name, 'test')
+                    existing_var_names.remove(output_var_name)
+
+            for tmp_output_var_name in tmp_output_var_names:
+                if tmp_output_var_name in existing_var_names:
+                    self._storegate.delete_data(tmp_output_var_name, 'test')
+                    existing_var_names.remove(tmp_output_var_name)
+
+            for output_var_name, backup_var_name in backup_var_names.items():
+                if backup_var_name in existing_var_names:
+                    self._storegate.rename_data(backup_var_name, output_var_name, 'test')
+                    existing_var_names.remove(backup_var_name)
+                    existing_var_names.add(output_var_name)
+
+            self._storegate.compile()
+            raise
+
+        existing_var_names = set(self._storegate.get_var_names('test'))
+        for backup_var_name in backup_var_names.values():
+            if backup_var_name in existing_var_names:
+                self._storegate.delete_data(backup_var_name, 'test')
+                existing_var_names.remove(backup_var_name)
 
         self._storegate.compile()
 

@@ -501,9 +501,7 @@ class SearchAgent(Agent):
                     ]
 
                     for pipe in ready_pipes:
-                        job = running_jobs_by_pipe.pop(pipe, None)
-                        if job is None:
-                            continue
+                        job = running_jobs_by_pipe.pop(pipe)
                         running_jobs_by_sentinel.pop(job.process.sentinel, None)
                         try:
                             self._history.append(pipe.recv())
@@ -515,9 +513,7 @@ class SearchAgent(Agent):
                             logger.info(f'completed process ({len(self._history)}/{num_jobs})')
 
                     for sentinel in ready_sentinels:
-                        job = running_jobs_by_sentinel.pop(sentinel, None)
-                        if job is None:
-                            continue
+                        job = running_jobs_by_sentinel.pop(sentinel)
                         running_jobs_by_pipe.pop(job.result_pipe, None)
                         if job.result_pipe.poll():
                             try:
