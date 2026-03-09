@@ -1,3 +1,4 @@
+import copy
 import inspect
 import json
 import math
@@ -85,6 +86,11 @@ def _record_finalize_error(
     logger.error(
         f'Job {job_id} (trial {trial_id}) finalize failed: {finalize_error}'
     )
+
+
+def _job_task_args(task_args: dict[str, Any]) -> dict[str, Any]:
+    """Return a per-job deep copy of task_args so jobs never share nested state."""
+    return copy.deepcopy(task_args)
 
 
 def _execute_task_in_subprocess(
@@ -504,7 +510,7 @@ class SearchAgent(Agent):
         with tqdm(**pbar_args) as pbar:
             for task, task_args, hps, job_id, trial_id in args:
                 try:
-                    task_for_job = task(**task_args)
+                    task_for_job = task(**_job_task_args(task_args))
                 except Exception as e:
                     result = {
                         'hps': dict(hps),
@@ -558,13 +564,14 @@ class SearchAgent(Agent):
             task, task_args, hps, job_id, trial_id = job_arg
             task_hps = dict(hps)
             task_hps['cuda_id'] = cuda_id
+            task_args_for_job = _job_task_args(task_args)
 
             parent_pipe, child_pipe = context.Pipe(duplex=False)
             process = context.Process(
                 target=_execute_task_in_subprocess,
                 args=(
                     task,
-                    task_args,
+                    task_args_for_job,
                     task_hps,
                     job_id,
                     trial_id,

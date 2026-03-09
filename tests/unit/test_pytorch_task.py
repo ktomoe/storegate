@@ -137,6 +137,13 @@ class _PredictOnlyTask(PytorchTask):
         return {}
 
 
+def _internal_tmp_name(index: int = 0, suffix: int | None = None) -> str:
+    base = f'__storegate_predict_tmp_{index}'
+    if suffix is None:
+        return base
+    return f'{base}_{suffix}'
+
+
 # ---------------------------------------------------------------------------
 # __init__ / compile
 # ---------------------------------------------------------------------------
@@ -527,6 +534,7 @@ def test_predict_raises_when_test_input_var_names_are_missing() -> None:
 
 
 def test_predict_replaces_existing_outputs_after_running() -> None:
+    tmp_pred = _internal_tmp_name()
     task = make_loop_task(
         input_var_names={'test': 'x'},
         output_var_names={'train': ['ignored'], 'test': 'pred'},
@@ -534,8 +542,7 @@ def test_predict_replaces_existing_outputs_after_running() -> None:
     task._storegate.get_var_names.side_effect = [
         ['pred', 'x'],
         ['pred', 'x'],
-        ['pred', 'x', 'tmp_pred'],
-        ['pred', 'x', 'tmp_pred'],
+        ['pred', 'x', tmp_pred],
         ['pred', 'x', 'backup_pred'],
     ]
     task.get_dataloader.return_value = 'test-loader'
@@ -547,7 +554,7 @@ def test_predict_replaces_existing_outputs_after_running() -> None:
     assert task._storegate.delete_data.call_args_list == [call('backup_pred', 'test')]
     assert task._storegate.rename_data.call_args_list == [
         call('pred', 'backup_pred', 'test'),
-        call('tmp_pred', 'pred', 'test'),
+        call(tmp_pred, 'pred', 'test'),
     ]
     task._storegate.compile.assert_called_once()
     task._ml.model.eval.assert_called_once()
@@ -556,6 +563,7 @@ def test_predict_replaces_existing_outputs_after_running() -> None:
 
 
 def test_predict_recompiles_after_writing_new_outputs() -> None:
+    tmp_pred = _internal_tmp_name()
     task = make_loop_task(
         input_var_names={'test': 'x'},
         output_var_names={'test': 'pred'},
@@ -563,8 +571,7 @@ def test_predict_recompiles_after_writing_new_outputs() -> None:
     task._storegate.get_var_names.side_effect = [
         ['x'],
         ['x'],
-        ['x', 'tmp_pred'],
-        ['x', 'tmp_pred'],
+        ['x', tmp_pred],
         ['x', 'pred'],
     ]
     task.get_dataloader.return_value = 'test-loader'
@@ -574,7 +581,7 @@ def test_predict_recompiles_after_writing_new_outputs() -> None:
 
     assert result == {'test': {'acc': 0.9}}
     task._storegate.delete_data.assert_not_called()
-    task._storegate.rename_data.assert_called_once_with('tmp_pred', 'pred', 'test')
+    task._storegate.rename_data.assert_called_once_with(tmp_pred, 'pred', 'test')
     task._storegate.compile.assert_called_once()
     task._ml.model.eval.assert_called_once()
     task.get_dataloader.assert_called_once_with('test')
@@ -592,10 +599,11 @@ def test_predict_restores_storegate_compiled_state_after_writing_outputs(tmp_pat
         storegate=sg,
     )
     task.get_dataloader.return_value = 'test-loader'
+    tmp_pred = _internal_tmp_name()
 
     def write_predictions(epoch: int, phase: str, dataloader: object) -> dict[str, float]:
         assert (epoch, phase, dataloader) == (0, 'test', 'test-loader')
-        sg.add_data('tmp_pred', np.ones((4, 1), dtype=np.float32), phase='test')
+        sg.add_data(tmp_pred, np.ones((4, 1), dtype=np.float32), phase='test')
         return {'acc': 1.0}
 
     task.step_epoch.side_effect = write_predictions
@@ -608,7 +616,7 @@ def test_predict_restores_storegate_compiled_state_after_writing_outputs(tmp_pat
         sg.get_data('pred', 'test'),
         np.ones((4, 1), dtype=np.float32),
     )
-    assert 'tmp_pred' not in sg.get_var_names('test')
+    assert tmp_pred not in sg.get_var_names('test')
 
 
 def test_predict_failure_preserves_existing_outputs_and_restores_compiled_state(tmp_path) -> None:
@@ -623,10 +631,11 @@ def test_predict_failure_preserves_existing_outputs_and_restores_compiled_state(
         storegate=sg,
     )
     task.get_dataloader.return_value = 'test-loader'
+    tmp_pred = _internal_tmp_name()
 
     def fail_predictions(epoch: int, phase: str, dataloader: object) -> dict[str, float]:
         assert (epoch, phase, dataloader) == (0, 'test', 'test-loader')
-        sg.add_data('tmp_pred', np.ones((2, 1), dtype=np.float32), phase='test')
+        sg.add_data(tmp_pred, np.ones((2, 1), dtype=np.float32), phase='test')
         raise RuntimeError('boom')
 
     task.step_epoch.side_effect = fail_predictions
@@ -638,7 +647,7 @@ def test_predict_failure_preserves_existing_outputs_and_restores_compiled_state(
         sg.get_data('pred', 'test'),
         np.zeros((4, 1), dtype=np.float32),
     )
-    assert 'tmp_pred' not in sg.get_var_names('test')
+    assert tmp_pred not in sg.get_var_names('test')
     assert len(sg['test']) == 4
 
 
@@ -654,16 +663,17 @@ def test_predict_promotion_failure_preserves_existing_outputs_and_restores_compi
         storegate=sg,
     )
     task.get_dataloader.return_value = 'test-loader'
+    tmp_pred = _internal_tmp_name()
 
     def write_predictions(epoch: int, phase: str, dataloader: object) -> dict[str, float]:
         assert (epoch, phase, dataloader) == (0, 'test', 'test-loader')
-        sg.add_data('tmp_pred', np.ones((2, 1), dtype=np.float32), phase='test')
+        sg.add_data(tmp_pred, np.ones((2, 1), dtype=np.float32), phase='test')
         return {'acc': 1.0}
 
     original_rename_data = sg.rename_data
 
     def fail_promoting_predictions(var_name: str, output_var_name: str, phase: str) -> None:
-        if (var_name, output_var_name, phase) == ('tmp_pred', 'pred', 'test'):
+        if (var_name, output_var_name, phase) == (tmp_pred, 'pred', 'test'):
             raise RuntimeError('promote failed')
         original_rename_data(var_name, output_var_name, phase)
 
@@ -677,7 +687,7 @@ def test_predict_promotion_failure_preserves_existing_outputs_and_restores_compi
         sg.get_data('pred', 'test'),
         np.zeros((4, 1), dtype=np.float32),
     )
-    assert 'tmp_pred' not in sg.get_var_names('test')
+    assert tmp_pred not in sg.get_var_names('test')
     assert len(sg['test']) == 4
 
 
@@ -694,16 +704,51 @@ def test_predict_missing_tmp_outputs_preserves_existing_outputs_and_restores_com
     )
     task.get_dataloader.return_value = 'test-loader'
     task.step_epoch.return_value = {'acc': 1.0}
+    tmp_pred = _internal_tmp_name()
 
-    with pytest.raises(KeyError, match='tmp_pred'):
+    with pytest.raises(KeyError, match=tmp_pred):
         task.predict()
 
     np.testing.assert_array_equal(
         sg.get_data('pred', 'test'),
         np.zeros((4, 1), dtype=np.float32),
     )
-    assert 'tmp_pred' not in sg.get_var_names('test')
+    assert tmp_pred not in sg.get_var_names('test')
     assert len(sg['test']) == 4
+
+
+def test_predict_preserves_user_tmp_named_variable(tmp_path) -> None:
+    sg = StoreGate(output_dir=str(tmp_path), mode='w', data_id='exp')
+    sg.add_data('x', np.arange(8, dtype=np.float32).reshape(4, 2), phase='test')
+    sg.add_data('pred', np.zeros((4, 1), dtype=np.float32), phase='test')
+    user_tmp_pred = np.full((4, 1), 7.0, dtype=np.float32)
+    sg.add_data('tmp_pred', user_tmp_pred, phase='test')
+    sg.compile()
+
+    task = make_loop_task(
+        input_var_names={'test': 'x'},
+        output_var_names={'test': 'pred'},
+        storegate=sg,
+    )
+    task.get_dataloader.return_value = 'test-loader'
+    internal_tmp_pred = _internal_tmp_name()
+
+    def write_predictions(epoch: int, phase: str, dataloader: object) -> dict[str, float]:
+        assert (epoch, phase, dataloader) == (0, 'test', 'test-loader')
+        sg.add_data(internal_tmp_pred, np.ones((4, 1), dtype=np.float32), phase='test')
+        return {'acc': 1.0}
+
+    task.step_epoch.side_effect = write_predictions
+
+    result = task.predict()
+
+    assert result == {'test': {'acc': 1.0}}
+    np.testing.assert_array_equal(
+        sg.get_data('pred', 'test'),
+        np.ones((4, 1), dtype=np.float32),
+    )
+    np.testing.assert_array_equal(sg.get_data('tmp_pred', 'test'), user_tmp_pred)
+    assert internal_tmp_pred not in sg.get_var_names('test')
 
 
 def test_predict_preserves_test_output_order_even_when_shuffle_requested(tmp_path) -> None:

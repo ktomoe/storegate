@@ -138,6 +138,22 @@ def test_acc_with_column_vector_labels() -> None:
     assert abs(result['acc'] - 0.5) < 1e-5
 
 
+def test_acc_with_binary_logits_single_output_column() -> None:
+    em = EpochMetric(['acc'], make_ml())
+    outputs = torch.tensor([[-2.0], [3.0], [1.5], [-0.1]])
+    labels = torch.tensor([[0], [1], [1], [0]])
+    result = em(make_batch(outputs=outputs, labels=labels, batch_size=4))
+    assert abs(result['acc'] - 1.0) < 1e-5
+
+
+def test_acc_with_binary_probabilities_single_output_vector() -> None:
+    em = EpochMetric(['acc'], make_ml())
+    outputs = torch.tensor([0.2, 0.8, 0.51, 0.49])
+    labels = torch.tensor([0, 1, 1, 0])
+    result = em(make_batch(outputs=outputs, labels=labels, batch_size=4))
+    assert abs(result['acc'] - 1.0) < 1e-5
+
+
 def test_acc_with_list_outputs() -> None:
     """acc with multi-head outputs (list of tensors)."""
     em = EpochMetric(['acc'], make_ml())
@@ -177,6 +193,26 @@ def test_acc_with_list_outputs_and_column_vector_labels() -> None:
     }
     result = em(batch)
     assert result['acc'] == [1.0, 0.5]
+
+
+def test_acc_with_list_outputs_and_binary_logits() -> None:
+    em = EpochMetric(['acc'], make_ml())
+    outputs = [
+        torch.tensor([[-1.0], [2.0], [3.0]]),
+        torch.tensor([[0.8], [0.4], [0.7]]),
+    ]
+    labels = [
+        torch.tensor([0, 1, 1]),
+        torch.tensor([[1], [0], [1]]),
+    ]
+    batch = {
+        'batch_size': 3,
+        'outputs': outputs,
+        'labels': labels,
+        'loss': {'loss': torch.tensor(0.0)},
+    }
+    result = em(batch)
+    assert result['acc'] == [1.0, 1.0]
 
 
 def test_acc_with_mismatched_list_outputs_and_labels_raises() -> None:

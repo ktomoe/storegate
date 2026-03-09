@@ -84,6 +84,21 @@ class EpochMetric:
 
         return labels
 
+    @staticmethod
+    def _binary_predictions(outputs: torch.Tensor) -> torch.Tensor:
+        if outputs.ndim == 2 and outputs.shape[1] == 1:
+            outputs = outputs.squeeze(1)
+
+        if outputs.ndim != 1:
+            raise ValueError(
+                'binary acc expects outputs with shape (N,) or (N, 1), '
+                f'got shape {tuple(outputs.shape)}.'
+            )
+
+        # Treat values outside [0, 1] as logits; otherwise assume probabilities.
+        threshold = 0.0 if torch.any((outputs < 0) | (outputs > 1)) else 0.5
+        return (outputs >= threshold).to(dtype=torch.long)
+
     def acc(self, batch_result: dict[str, Any]) -> float | list[float]:
         outputs = batch_result['outputs']
         labels = batch_result['labels']
@@ -99,13 +114,19 @@ class EpochMetric:
             results: list[float] = []
             for output, label in zip(outputs, labels):
                 label = self._normalize_class_labels(label)
-                _, preds = torch.max(output, 1)
+                if output.ndim == 1 or (output.ndim == 2 and output.shape[1] == 1):
+                    preds = self._binary_predictions(output)
+                else:
+                    _, preds = torch.max(output, 1)
                 corrects = torch.sum(preds == label.data)
                 results.append(corrects.detach().item() / len(label))
             return results
 
         labels = self._normalize_class_labels(labels)
-        _, preds = torch.max(outputs, 1)
+        if outputs.ndim == 1 or (outputs.ndim == 2 and outputs.shape[1] == 1):
+            preds = self._binary_predictions(outputs)
+        else:
+            _, preds = torch.max(outputs, 1)
         corrects = torch.sum(preds == labels.data)
         return corrects.detach().item() / len(labels)
 

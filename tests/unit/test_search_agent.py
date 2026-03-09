@@ -132,6 +132,23 @@ class _SleepRecordTask:
         pass
 
 
+class _MutatingTaskArgsTask:
+    """Mutates nested task_args state so tests can detect shared references."""
+    def __init__(self, state: dict[str, list[int]]) -> None:
+        self._state = state
+        self._hps: dict[str, int] = {}
+
+    def set_hps(self, hps: dict) -> None:
+        self._hps = dict(hps)
+
+    def execute(self) -> dict:
+        self._state['seen'].append(self._hps['job'])
+        return {'seen': list(self._state['seen'])}
+
+    def finalize(self) -> None:
+        pass
+
+
 class _LargeResultTask:
     """Returns a payload large enough to block if the parent never drains the pipe."""
     def __init__(self, payload_size: int = 2 * 1024 * 1024) -> None:
@@ -216,6 +233,8 @@ class _FakeProcess:
         self.started = False
         self.closed = False
         self.join_calls: list[float | None] = []
+        self.received_target: object | None = None
+        self.received_args: tuple[object, ...] | None = None
 
     def start(self) -> None:
         self.started = True
@@ -253,6 +272,8 @@ class _FakeContext:
         return self._parent_pipe, self._child_pipe
 
     def Process(self, target: object, args: tuple[object, ...]) -> _FakeProcess:
+        self._process.received_target = target
+        self._process.received_args = args
         return self._process
 
 
@@ -968,6 +989,21 @@ def test_execute_without_cuda_ids_does_not_create_process_pool() -> None:
     assert agent._history[0]['result'] == {'score': 3}
 
 
+def test_execute_serial_jobs_deepcopies_task_args_per_job() -> None:
+    task_args = {'state': {'seen': []}}
+    agent = SearchAgent(
+        task=_MutatingTaskArgsTask,
+        task_args=task_args,
+        hps={'job': [0, 1]},
+    )
+
+    agent.execute()
+    agent.finalize()
+
+    assert [r['result']['seen'] for r in agent._history] == [[0], [1]]
+    assert task_args == {'state': {'seen': []}}
+
+
 def test_execute_cuda_ids_injected_into_hps() -> None:
     """cuda_id is added to hps before the task sees them."""
     agent = SearchAgent(task=_HpsRecordTask, hps=None, cuda_ids=[5])
@@ -997,6 +1033,37 @@ def test_execute_with_cuda_ids_dispatches_to_pool_jobs() -> None:
 
     agent.execute_pool_jobs.assert_called_once_with([[agent._task, agent._task_args, {}, 0, None]])
     agent.execute_serial_jobs.assert_not_called()
+
+
+def test_execute_pool_jobs_deepcopies_task_args_before_submitting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_pipe = _FakePipe(poll_result=False)
+    process = _FakeProcess(sentinel=104, exitcode=1)
+    child_pipe = _FakePipe()
+    context = _FakeContext(
+        parent_pipe=parent_pipe,
+        child_pipe=child_pipe,
+        process=process,
+    )
+    wait_results = iter([[process.sentinel]])
+
+    monkeypatch.setattr('storegate.agent.search_agent.mp.get_context', lambda _: context)
+    monkeypatch.setattr(
+        'storegate.agent.search_agent.wait',
+        lambda objects, timeout=None: next(wait_results),
+    )
+
+    task_args = {'state': {'seen': []}}
+    agent = SearchAgent(task=_NoopTask, task_args=task_args, hps=None, cuda_ids=[0])
+    agent.execute_pool_jobs([[agent._task, agent._task_args, {}, 0, None]])
+
+    assert process.received_args is not None
+    submitted_task_args = process.received_args[1]
+    assert isinstance(submitted_task_args, dict)
+    assert submitted_task_args == task_args
+    assert submitted_task_args is not agent._task_args
+    assert submitted_task_args['state'] is not agent._task_args['state']
 
 
 def test_suffix_job_id_default_is_true() -> None:

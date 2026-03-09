@@ -55,10 +55,22 @@ class PytorchTask(DLTask):
     @staticmethod
     def _tmp_test_output_var_names(
         output_var_names: list[str] | None,
+        reserved_names: set[str],
     ) -> list[str] | None:
         if output_var_names is None:
             return None
-        return [f'tmp_{var_name}' for var_name in output_var_names]
+
+        tmp_output_var_names: list[str] = []
+        for index, _ in enumerate(output_var_names):
+            candidate = f'__storegate_predict_tmp_{index}'
+            suffix = 0
+            while candidate in reserved_names:
+                suffix += 1
+                candidate = f'__storegate_predict_tmp_{index}_{suffix}'
+            reserved_names.add(candidate)
+            tmp_output_var_names.append(candidate)
+
+        return tmp_output_var_names
 
     @staticmethod
     def _backup_test_output_var_name(
@@ -276,16 +288,16 @@ class PytorchTask(DLTask):
     def predict(self) -> dict[str, Any]:
         """Predict and upload outputs to storegate."""
         output_var_names = self._phase_var_names('_output_var_names', 'test')
-        tmp_output_var_names = self._tmp_test_output_var_names(output_var_names)
-
-        if self._delete_test_outputs(tmp_output_var_names):
-            self._storegate.compile()
 
         existing_var_names = set(self._storegate.get_var_names('test'))
         if not existing_var_names:
             logger.warn("predict() skipped: no variables found in the 'test' phase.")
             return {'test': {}}
         self._validate_test_inputs_exist(existing_var_names)
+        tmp_output_var_names = self._tmp_test_output_var_names(
+            output_var_names,
+            existing_var_names | set(output_var_names or []),
+        )
 
         self._ml.model.eval()
         dataloader = self.get_dataloader('test')
