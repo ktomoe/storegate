@@ -9,7 +9,12 @@ from typing import Any
 import pytest
 from unittest.mock import MagicMock
 
-from storegate.agent.search_agent import SearchAgent, _RunningJob, _shutdown_running_jobs
+from storegate.agent.search_agent import (
+    SearchAgent,
+    _RunningJob,
+    _execute_task_in_subprocess,
+    _shutdown_running_jobs,
+)
 from storegate.agent.grid_search_agent import GridSearchAgent
 from storegate.agent.random_search_agent import RandomSearchAgent
 
@@ -216,6 +221,18 @@ def _agent(**kwargs: object) -> SearchAgent:
     defaults: dict = dict(task=task, hps=None, num_trials=None, cuda_ids=None)
     defaults.update(kwargs)
     return SearchAgent(**defaults)
+
+
+class _SendPipe:
+    def __init__(self) -> None:
+        self.sent: list[dict[str, Any]] = []
+        self.closed = False
+
+    def send(self, value: dict[str, Any]) -> None:
+        self.sent.append(value)
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def _execute_pool_jobs_with_fake_worker(
@@ -459,13 +476,49 @@ def test_execute_task_finalize_always_called_on_exception() -> None:
     task.finalize.assert_called_once()
 
 
-def test_execute_task_finalize_failure_does_not_propagate() -> None:
+def test_execute_task_finalize_failure_is_recorded_when_execute_succeeds() -> None:
+    task = MagicMock()
+    task.execute.return_value = {'score': 0.9}
+    task.finalize.side_effect = RuntimeError('finalize fail')
+
+    result = _agent(suffix_job_id=False).execute_task(task, hps={}, job_id=0)
+
+    assert result['result'] == {'score': 0.9}
+    assert result['error'] == 'RuntimeError: finalize fail'
+    assert result['finalize_error'] == 'RuntimeError: finalize fail'
+
+
+def test_execute_task_finalize_failure_does_not_override_execute_error() -> None:
     task = MagicMock()
     task.execute.side_effect = RuntimeError('execute fail')
     task.finalize.side_effect = RuntimeError('finalize fail')
 
-    result = _agent().execute_task(task, hps={}, job_id=0)
-    assert 'error' in result  # execute error recorded; finalize error does not override
+    result = _agent(suffix_job_id=False).execute_task(task, hps={}, job_id=0)
+    assert result['error'] == 'RuntimeError: execute fail'
+    assert result['finalize_error'] == 'RuntimeError: finalize fail'
+    assert 'result' not in result
+
+
+def test_execute_task_in_subprocess_finalize_failure_is_recorded() -> None:
+    class _FinalizeFailTask:
+        def set_hps(self, hps: dict[str, Any]) -> None:
+            pass
+
+        def execute(self) -> dict[str, Any]:
+            return {'score': 1.0}
+
+        def finalize(self) -> None:
+            raise RuntimeError('finalize fail')
+
+    result_pipe = _SendPipe()
+    _execute_task_in_subprocess(
+        _FinalizeFailTask(), {}, 0, None, False, result_pipe
+    )
+
+    assert result_pipe.closed is True
+    assert result_pipe.sent[0]['result'] == {'score': 1.0}
+    assert result_pipe.sent[0]['error'] == 'RuntimeError: finalize fail'
+    assert result_pipe.sent[0]['finalize_error'] == 'RuntimeError: finalize fail'
 
 
 # ---------------------------------------------------------------------------

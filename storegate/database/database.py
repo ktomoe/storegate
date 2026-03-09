@@ -3,10 +3,28 @@ from abc import ABCMeta, abstractmethod
 from typing import Any
 
 import numpy as np
+from zarr.dtype import parse_dtype
 
 
 class Database(metaclass=ABCMeta):
     """Base class of Database."""
+
+    @staticmethod
+    def _validate_zarr_compatible_dtype(
+        data: np.ndarray,
+        *,
+        var_name: str,
+        phase: str,
+    ) -> None:
+        """Reject dtypes that StoreGate cannot persist to the zarr backend."""
+        try:
+            parse_dtype(data.dtype, zarr_format=3)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"dtype '{data.dtype.name}' for '{var_name}' in '{phase}' is not "
+                'persistable to the zarr backend. '
+                'Cast the array to a zarr-compatible dtype before adding it.'
+            ) from exc
 
     @staticmethod
     def _normalize_index(index: int | slice | None) -> int | slice:

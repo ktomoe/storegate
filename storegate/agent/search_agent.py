@@ -68,6 +68,21 @@ def _child_process_error(job: _RunningJob) -> dict[str, Any]:
     }
 
 
+def _record_finalize_error(
+    result: dict[str, Any],
+    job_id: int,
+    trial_id: int | None,
+    exc: Exception,
+) -> None:
+    """Record finalize() failure in the job result without hiding execute() errors."""
+    finalize_error = f'{type(exc).__name__}: {exc}'
+    result['finalize_error'] = finalize_error
+    result.setdefault('error', finalize_error)
+    logger.error(
+        f'Job {job_id} (trial {trial_id}) finalize failed: {finalize_error}'
+    )
+
+
 def _execute_task_in_subprocess(
     task: Any,
     hps: dict[str, Any],
@@ -103,10 +118,7 @@ def _execute_task_in_subprocess(
         try:
             task.finalize()
         except Exception as e:
-            logger.error(
-                f'Job {job_id} (trial {trial_id}) finalize failed: '
-                f'{type(e).__name__}: {e}'
-            )
+            _record_finalize_error(result, job_id, trial_id, e)
         try:
             result_pipe.send(result)
         except (BrokenPipeError, EOFError, OSError):
@@ -567,6 +579,6 @@ class SearchAgent(Agent):
             try:
                 task.finalize()
             except Exception as e:
-                logger.error(f'Job {job_id} (trial {trial_id}) finalize failed: {type(e).__name__}: {e}')
+                _record_finalize_error(result, job_id, trial_id, e)
 
         return result

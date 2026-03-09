@@ -266,6 +266,14 @@ def test_add_and_get_data(sg_id):
     np.testing.assert_array_equal(result, data)
 
 
+def test_add_data_numpy_backend_rejects_non_zarr_compatible_dtype(sg_id):
+    sg_id.set_backend('numpy')
+    data = np.array([{'a': 1}, {'b': 2}], dtype=object)
+
+    with pytest.raises(ValueError, match='not persistable to the zarr backend'):
+        sg_id.add_data('x', data, phase='train')
+
+
 def test_add_data_invalid_phase_raises(sg_id):
     with pytest.raises(ValueError, match='Invalid phase'):
         sg_id.add_data('x', np.array([[1.0]]), phase='bad_phase')

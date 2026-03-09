@@ -48,6 +48,13 @@ def test_add_data_persists_var_name_registration_order(zarr_db):
     assert meta['var_names']['train'] == ['x', 'y']
 
 
+def test_add_data_zarr_incompatible_dtype_raises(zarr_db):
+    data = np.array([{'a': 1}, {'b': 2}], dtype=object)
+
+    with pytest.raises(ValueError, match='not persistable to the zarr backend'):
+        zarr_db.add_data(DATA_ID, 'x', data, 'train')
+
+
 def test_add_data_shape_mismatch_raises(zarr_db):
     data1 = np.array([[1.0, 2.0], [3.0, 4.0]])       # shape (2, 2)
     data2 = np.array([[5.0, 6.0, 7.0]])                # shape (1, 3)

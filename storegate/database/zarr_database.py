@@ -139,6 +139,11 @@ class ZarrDatabase(Database):
         return max(1, int(arr.shape[0]))
 
     def add_data(self, data_id: str, var_name: str, data: np.ndarray, phase: str) -> None:
+        self._validate_zarr_compatible_dtype(
+            data,
+            var_name=var_name,
+            phase=phase,
+        )
         db = self._db[data_id][phase]
         is_new_var = var_name not in db.array_keys()
 

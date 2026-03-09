@@ -51,6 +51,13 @@ def test_add_data_appends_to_existing(db):
     assert db._metadata[DATA_ID]['train']['x']['total_events'] == 3
 
 
+def test_add_data_zarr_incompatible_dtype_raises(db):
+    data = np.array([{'a': 1}, {'b': 2}], dtype=object)
+
+    with pytest.raises(ValueError, match='not persistable to the zarr backend'):
+        db.add_data(DATA_ID, 'x', data, 'train')
+
+
 def test_add_data_accumulates_chunks_without_concat(db):
     """Chunks are stored as a list; concatenation is deferred until get_data."""
     db.add_data(DATA_ID, 'x', np.array([[1.0]]), 'train')

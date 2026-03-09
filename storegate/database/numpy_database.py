@@ -56,6 +56,11 @@ class NumpyDatabase(Database):
         return renamed
 
     def add_data(self, data_id: str, var_name: str, data: np.ndarray, phase: str) -> None:
+        self._validate_zarr_compatible_dtype(
+            data,
+            var_name=var_name,
+            phase=phase,
+        )
         if var_name in self._chunks[data_id][phase]:
             meta = self._metadata[data_id][phase][var_name]
             if data.shape[1:] != meta['shape']:
