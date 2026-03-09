@@ -75,6 +75,7 @@ def _execute_task_in_subprocess(
             task_hps['output_var_names'] = SearchAgent._suffix_output_var_names(
                 base_output_var_names,
                 job_id,
+                trial_id,
             )
         task.set_hps(task_hps)
         result['result'] = task.execute()
@@ -161,8 +162,10 @@ class SearchAgent(Agent):
                 jobs are cancelled and a ``TimeoutError`` is recorded in their result
                 entries.  ``None`` (default) means wait indefinitely.
             suffix_job_id (bool): If True, inject ``output_var_names`` into each job's
-                hyperparameters with ``_job{job_id}`` appended to every output variable
-                name. Supports ``str``, ``list[str]``, and phase dictionaries.
+                hyperparameters with ``_job{job_id}_trial{trial_id}`` appended to
+                every output variable name. When ``trial_id`` is ``None``, the
+                implicit single trial is treated as ``trial0``. Supports ``str``,
+                ``list[str]``, and phase dictionaries.
         """
         self._task = task
         self._hps: list[dict[str, Any]] = self.all_combinations(hps)
@@ -244,8 +247,9 @@ class SearchAgent(Agent):
     def _suffix_output_var_names(
         output_var_names: Any,
         job_id: int,
+        trial_id: int | None = None,
     ) -> Any:
-        suffix = f'_job{job_id}'
+        suffix = f'_job{job_id}_trial{0 if trial_id is None else trial_id}'
 
         if output_var_names is None:
             return None
@@ -255,7 +259,11 @@ class SearchAgent(Agent):
             return [var_name + suffix for var_name in output_var_names]
         if isinstance(output_var_names, dict):
             return {
-                phase: SearchAgent._suffix_output_var_names(phase_var_names, job_id)
+                phase: SearchAgent._suffix_output_var_names(
+                    phase_var_names,
+                    job_id,
+                    trial_id,
+                )
                 for phase, phase_var_names in output_var_names.items()
             }
         raise TypeError(
@@ -521,6 +529,7 @@ class SearchAgent(Agent):
                 task_hps['output_var_names'] = self._suffix_output_var_names(
                     base_output_var_names,
                     job_id,
+                    trial_id,
                 )
             with self._serial_job_timeout(enforce_timeout):
                 task.set_hps(task_hps)

@@ -146,7 +146,8 @@ agent = GridSearchAgent(
         'batch_size':         [64, 128],
     },
     cuda_ids=[0, 1],       # injects cuda_id values into jobs in submission order
-    # default suffix_job_id=True writes test outputs as e.g. pred_job0, pred_job1, ...
+    # default suffix_job_id=True writes test outputs as e.g.
+    # pred_job0_trial0, pred_job1_trial0, ...
     json_dump='results.json',
 )
 agent.execute()
@@ -182,7 +183,7 @@ without replacement. Set `replace=True` to allow duplicate combinations.
 `cuda_ids=None` runs jobs serially in the current process using the task's own device.
 When `cuda_ids` is a list, those values control which `cuda_id` is injected into each job's hyperparameters.
 Jobs are assigned IDs in submission order; this is not an exclusive worker-to-GPU binding.
-By default, `suffix_job_id=True`, so `output_var_names` are suffixed with `_job{job_id}` to avoid collisions between parallel jobs. Set `suffix_job_id=False` only when each job writes to a different `data_id` or otherwise guarantees isolated output variable names.
+By default, `suffix_job_id=True`, so `output_var_names` are suffixed with `_job{job_id}_trial{trial_id}` to avoid collisions between parallel jobs and repeated trials. When `num_trials` is not set, the implicit single trial uses `trial0`. Set `suffix_job_id=False` only when each job writes to a different `data_id` or otherwise guarantees isolated output variable names.
 
 **Hyperparameter key conventions:**
 

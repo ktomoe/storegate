@@ -58,6 +58,11 @@ class StoreGateDataset(tdata.Dataset):  # type: ignore[type-arg]
     def __len__(self) -> int:
         return self._size
 
+    @staticmethod
+    def _to_tensor_copy(data: object) -> torch.Tensor:
+        """Materialize StoreGate data as an owned tensor without aliasing numpy buffers."""
+        return torch.tensor(data)
+
     def _get_tensors(
         self,
         var_names: str | list[str] | None,
@@ -72,11 +77,15 @@ class StoreGateDataset(tdata.Dataset):  # type: ignore[type-arg]
         if var_names is None:
             return None
         if isinstance(var_names, str):
-            return torch.as_tensor(self._storegate.get_data(var_names, self._phase, index))
+            return self._to_tensor_copy(
+                self._storegate.get_data(var_names, self._phase, index)
+            )
         if len(var_names) == 1:
-            return torch.as_tensor(self._storegate.get_data(var_names[0], self._phase, index))
+            return self._to_tensor_copy(
+                self._storegate.get_data(var_names[0], self._phase, index)
+            )
         return [
-            torch.as_tensor(self._storegate.get_data(var_name, self._phase, index))
+            self._to_tensor_copy(self._storegate.get_data(var_name, self._phase, index))
             for var_name in var_names
         ]
 

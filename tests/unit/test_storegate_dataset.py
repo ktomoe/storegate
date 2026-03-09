@@ -35,6 +35,17 @@ def sg_multi(tmp_path):
     return store
 
 
+@pytest.fixture
+def sg_numpy(tmp_path):
+    """StoreGate backed by numpy memory for aliasing tests."""
+    store = StoreGate(output_dir=str(tmp_path), mode='w', data_id='ds')
+    store.set_backend('numpy')
+    store.add_data('x', np.arange(12, dtype=np.float32).reshape(3, 4), phase='train')
+    store.add_data('y', np.arange(3, dtype=np.int64).reshape(3, 1), phase='train')
+    store.compile()
+    return store
+
+
 # ---------------------------------------------------------------------------
 # __len__
 # ---------------------------------------------------------------------------
@@ -184,3 +195,33 @@ def test_preload_multi_var_values_match_lazy(sg_multi) -> None:
         assert torch.equal(d_l[0], d_p[0])
         assert torch.equal(d_l[1], d_p[1])
         assert torch.equal(t_l, t_p)
+
+
+@pytest.mark.parametrize('preload', [False, True])
+def test_tensor_updates_do_not_mutate_numpy_storegate_data(
+    sg_numpy: StoreGate,
+    preload: bool,
+) -> None:
+    ds = StoreGateDataset(
+        sg_numpy,
+        'train',
+        input_var_names='x',
+        true_var_names='y',
+        preload=preload,
+    )
+
+    data, target = ds[0]
+    assert isinstance(data, torch.Tensor)
+    assert isinstance(target, torch.Tensor)
+
+    data.add_(100)
+    target.add_(10)
+
+    np.testing.assert_array_equal(
+        sg_numpy.get_data('x', 'train', 0),
+        np.array([0.0, 1.0, 2.0, 3.0], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        sg_numpy.get_data('y', 'train', 0),
+        np.array([0], dtype=np.int64),
+    )

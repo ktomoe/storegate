@@ -680,16 +680,20 @@ def test_suffix_job_id_default_is_true() -> None:
 @pytest.mark.parametrize(
     ('output_var_names', 'hps', 'expected'),
     [
-        ('pred', None, ['pred_job0']),
-        (['pred', 'score'], None, [['pred_job0', 'score_job0']]),
+        ('pred', None, ['pred_job0_trial0']),
+        (['pred', 'score'], None, [['pred_job0_trial0', 'score_job0_trial0']]),
         (
             {'train': None, 'valid': ['val_pred'], 'test': 'pred'},
             None,
-            [{'train': None, 'valid': ['val_pred_job0'], 'test': 'pred_job0'}],
+            [{'train': None, 'valid': ['val_pred_job0_trial0'], 'test': 'pred_job0_trial0'}],
         ),
-        ('pred', {'a': [1, 2]}, ['pred_job0', 'pred_job1']),
-        ('pred', {'output_var_names': ['custom']}, ['custom_job0']),
-        ('pred', {'output_var_names': [['custom', 'score']]}, [['custom_job0', 'score_job0']]),
+        ('pred', {'a': [1, 2]}, ['pred_job0_trial0', 'pred_job1_trial0']),
+        ('pred', {'output_var_names': ['custom']}, ['custom_job0_trial0']),
+        (
+            'pred',
+            {'output_var_names': [['custom', 'score']]},
+            [['custom_job0_trial0', 'score_job0_trial0']],
+        ),
     ],
 )
 def test_suffix_job_id_updates_output_var_names(
@@ -705,6 +709,23 @@ def test_suffix_job_id_updates_output_var_names(
     agent.execute()
     agent.finalize()
     assert [r['result']['output_var_names'] for r in agent._history] == expected
+
+
+def test_suffix_job_id_uses_trial_id_when_num_trials_enabled() -> None:
+    agent = SearchAgent(
+        task=_OutputVarNamesTask('pred'),
+        hps=None,
+        num_trials=2,
+        suffix_job_id=True,
+    )
+
+    agent.execute()
+    agent.finalize()
+
+    assert [r['result']['output_var_names'] for r in agent._history] == [
+        'pred_job0_trial0',
+        'pred_job0_trial1',
+    ]
 
 
 def test_execute_then_finalize_writes_json(tmp_path) -> None:
@@ -808,24 +829,27 @@ def test_job_timeout_none_does_not_interfere_with_fast_jobs() -> None:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
-    ('output_var_names', 'job_id', 'expected'),
+    ('output_var_names', 'job_id', 'trial_id', 'expected'),
     [
-        (None, 0, None),
-        ('pred', 3, 'pred_job3'),
-        (['a', 'b'], 1, ['a_job1', 'b_job1']),
+        (None, 0, None, None),
+        ('pred', 3, None, 'pred_job3_trial0'),
+        ('pred', 3, 7, 'pred_job3_trial7'),
+        (['a', 'b'], 1, None, ['a_job1_trial0', 'b_job1_trial0']),
         (
             {'train': None, 'valid': ['v'], 'test': 'pred'},
             2,
-            {'train': None, 'valid': ['v_job2'], 'test': 'pred_job2'},
+            4,
+            {'train': None, 'valid': ['v_job2_trial4'], 'test': 'pred_job2_trial4'},
         ),
     ],
 )
 def test_suffix_output_var_names_supported_values(
     output_var_names: object,
     job_id: int,
+    trial_id: int | None,
     expected: object,
 ) -> None:
-    assert SearchAgent._suffix_output_var_names(output_var_names, job_id) == expected
+    assert SearchAgent._suffix_output_var_names(output_var_names, job_id, trial_id) == expected
 
 
 def test_suffix_output_var_names_unsupported_type_raises() -> None:
@@ -838,16 +862,22 @@ def test_suffix_output_var_names_unsupported_type_raises() -> None:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
-    ('hps', 'job_id', 'expected'),
+    ('hps', 'job_id', 'trial_id', 'expected'),
     [
-        ({}, 5, 'pred_job5'),
-        ({'output_var_names': 'custom'}, 0, 'custom_job0'),
-        ({'output_var_names': ['custom', 'score']}, 2, ['custom_job2', 'score_job2']),
+        ({}, 5, None, 'pred_job5_trial0'),
+        ({'output_var_names': 'custom'}, 0, None, 'custom_job0_trial0'),
+        (
+            {'output_var_names': ['custom', 'score']},
+            2,
+            9,
+            ['custom_job2_trial9', 'score_job2_trial9'],
+        ),
     ],
 )
 def test_execute_task_suffix_job_id_applies_expected_value(
     hps: dict[str, object],
     job_id: int,
+    trial_id: int | None,
     expected: object,
 ) -> None:
     task = MagicMock()
@@ -855,7 +885,7 @@ def test_execute_task_suffix_job_id_applies_expected_value(
     task.execute.return_value = {}
     agent = SearchAgent(task=task, suffix_job_id=True)
 
-    result = agent.execute_task(task, hps=hps, job_id=job_id)
+    result = agent.execute_task(task, hps=hps, job_id=job_id, trial_id=trial_id)
 
     passed_hps = task.set_hps.call_args[0][0]
     assert passed_hps['output_var_names'] == expected
