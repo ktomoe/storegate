@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from itertools import product
 from multiprocessing.connection import Connection, wait
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from tqdm import tqdm  # type: ignore[import-untyped]
 
@@ -264,7 +264,9 @@ class SearchAgent(Agent):
         )
 
     def _build_job_args(self) -> list[list[Any]]:
-        trial_ids = [None] if self._num_trials is None else list(range(self._num_trials))
+        trial_ids: list[int | None] = (
+            [None] if self._num_trials is None else list(range(self._num_trials))
+        )
         return [
             [self._task, hps, job_id, trial_id]
             for job_id, hps in enumerate(self._hps)
@@ -359,7 +361,7 @@ class SearchAgent(Agent):
         cuda_ids: Sequence[int] = self._cuda_ids
         num_jobs = len(args)
         num_workers = len(cuda_ids)
-        context = mp.get_context(self._context)
+        context = cast(Any, mp.get_context(self._context))
 
         pbar_args = dict(ncols=80, total=num_jobs, disable=self._disable_tqdm)
 
@@ -445,7 +447,7 @@ class SearchAgent(Agent):
                         break
 
                     for sentinel in ready_sentinels:
-                        job = running_jobs.pop(sentinel)
+                        job = running_jobs.pop(cast(int, sentinel))
                         if job.result_pipe.poll():
                             try:
                                 self._history.append(job.result_pipe.recv())
