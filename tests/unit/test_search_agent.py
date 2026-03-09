@@ -116,6 +116,22 @@ class _HpsRecordTask:
         pass
 
 
+class _SleepRecordTask:
+    """Sleeps for the requested duration, then returns the injected hps."""
+    def __init__(self) -> None:
+        self._hps: dict = {}
+
+    def set_hps(self, hps: dict) -> None:
+        self._hps = dict(hps)
+
+    def execute(self) -> dict:
+        time.sleep(float(self._hps.get('sleep', 0.0)))
+        return dict(self._hps)
+
+    def finalize(self) -> None:
+        pass
+
+
 class _LargeResultTask:
     """Returns a payload large enough to block if the parent never drains the pipe."""
     def __init__(self, payload_size: int = 2 * 1024 * 1024) -> None:
@@ -959,17 +975,17 @@ def test_execute_cuda_ids_injected_into_hps() -> None:
     assert agent._history[0]['result']['cuda_id'] == 5
 
 
-def test_execute_cuda_ids_round_robin_two_workers() -> None:
-    """With 2 workers and 4 jobs, cuda ids are assigned round-robin: 0,1,0,1."""
+def test_execute_cuda_ids_reuse_freed_worker_slot() -> None:
+    """The next queued job reuses the cuda_id of the worker slot that finished."""
     agent = SearchAgent(
-        task=_HpsRecordTask,
-        hps={'a': [1, 2, 3, 4]},
+        task=_SleepRecordTask,
+        hps={'sleep': [0.4, 0.05, 0.0]},
         cuda_ids=[0, 1],
     )
     agent.execute()
     agent.finalize()  # sort by job_id for deterministic assertion
     assigned = [r['result']['cuda_id'] for r in agent._history]
-    assert assigned == [0, 1, 0, 1]
+    assert assigned == [0, 1, 1]
 
 
 def test_execute_with_cuda_ids_dispatches_to_pool_jobs() -> None:

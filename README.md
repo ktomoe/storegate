@@ -207,8 +207,9 @@ agent.finalize()
 without replacement. Set `replace=True` to allow duplicate combinations.
 
 `cuda_ids=None` runs jobs serially in the current process using the task's own device.
-When `cuda_ids` is a list, those values control which `cuda_id` is injected into each job's hyperparameters.
-Jobs are assigned IDs in submission order; this is not an exclusive worker-to-GPU binding.
+When `cuda_ids` is a list, each entry defines one worker slot and the injected `cuda_id` for that slot.
+When a job finishes, the next queued job reuses the freed slot's `cuda_id`.
+With unique values such as `[0, 1]`, concurrent jobs use distinct GPUs; repeated IDs intentionally share a device.
 By default, `suffix_job_id=True`, so `output_var_names` are suffixed with `_job{job_id}_trial{trial_id}` to avoid collisions between parallel jobs and repeated trials. When `num_trials` is not set, the implicit single trial uses `trial0`. Set `suffix_job_id=False` only when each job writes to a different `data_id` or otherwise guarantees isolated output variable names.
 Search agents instantiate a fresh task for each job, so pass the task class via `task=...`
 and constructor kwargs via `task_args={...}` instead of passing a pre-built task instance.

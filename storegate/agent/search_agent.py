@@ -3,6 +3,7 @@ import json
 import math
 import multiprocessing as mp
 import signal
+from collections import deque
 from dataclasses import dataclass
 from collections.abc import Sequence
 from contextlib import contextmanager
@@ -25,6 +26,7 @@ class _RunningJob:
     hps: dict[str, Any]
     job_id: int
     trial_id: int | None
+    cuda_id: int | None = None
 
 
 def _shutdown_running_jobs(
@@ -244,9 +246,10 @@ class SearchAgent(Agent):
                 process using the task's own device.
                 When a list is provided, the number of concurrent processes
                 equals ``len(cuda_ids)``.
-                For each submitted job, the agent injects one ``cuda_id`` value
-                chosen from this list according to the job's submission index.
-                This is not an exclusive worker-to-GPU binding.
+                Each list entry defines one worker slot. When a slot becomes
+                free, the next queued job reuses that slot's ``cuda_id``.
+                With unique ``cuda_ids``, concurrent jobs therefore use
+                distinct devices; repeated IDs intentionally share a device.
             disable_tqdm (bool): If True, suppress the tqdm progress bar.
             json_dump (str or None): File path to dump the result history as JSON.
             job_timeout (float or None): Maximum seconds to wait for any pending job to
@@ -543,17 +546,17 @@ class SearchAgent(Agent):
         num_jobs = len(args)
         num_workers = len(cuda_ids)
         context = cast(Any, mp.get_context(self._context))
+        available_cuda_ids: deque[int] = deque(cuda_ids)
 
         pbar_args = dict(ncols=80, total=num_jobs, disable=self._disable_tqdm)
 
         def _submit(
-            ii: int,
             job_arg: list[Any],
+            cuda_id: int,
             running_jobs: dict[int, _RunningJob],
         ) -> _RunningJob:
             task, task_args, hps, job_id, trial_id = job_arg
             task_hps = dict(hps)
-            cuda_id = cuda_ids[ii % num_workers]
             task_hps['cuda_id'] = cuda_id
 
             parent_pipe, child_pipe = context.Pipe(duplex=False)
@@ -577,22 +580,27 @@ class SearchAgent(Agent):
                 hps=task_hps,
                 job_id=job_id,
                 trial_id=trial_id,
+                cuda_id=cuda_id,
             )
             running_jobs[process.sentinel] = job
             return job
 
-        args_iter = iter(enumerate(args))
+        args_iter = iter(args)
         running_jobs_by_sentinel: dict[int, _RunningJob] = {}
         running_jobs_by_pipe: dict[Connection, _RunningJob] = {}
 
         try:
             with tqdm(**pbar_args) as pbar:
-                while len(running_jobs_by_sentinel) < num_workers:
+                while available_cuda_ids and len(running_jobs_by_sentinel) < num_workers:
                     try:
-                        ii, job_arg = next(args_iter)
+                        job_arg = next(args_iter)
                     except StopIteration:
                         break
-                    job = _submit(ii, job_arg, running_jobs_by_sentinel)
+                    job = _submit(
+                        job_arg,
+                        available_cuda_ids.popleft(),
+                        running_jobs_by_sentinel,
+                    )
                     running_jobs_by_pipe[job.result_pipe] = job
 
                 while running_jobs_by_sentinel:
@@ -617,7 +625,7 @@ class SearchAgent(Agent):
                                 f'{self._job_timeout}s'
                             )
                             pbar.update(1)
-                        for _, job_arg in args_iter:
+                        for job_arg in args_iter:
                             _, _, hps, job_id, trial_id = job_arg
                             self._history.append({
                                 'hps': hps,
@@ -658,16 +666,22 @@ class SearchAgent(Agent):
                         else:
                             self._history.append(_child_process_error(job))
                         _close_finished_job(job)
+                        if job.cuda_id is not None:
+                            available_cuda_ids.append(job.cuda_id)
                         pbar.update(1)
                         if self._disable_tqdm:
                             logger.info(f'completed process ({len(self._history)}/{num_jobs})')
 
-                    while len(running_jobs_by_sentinel) < num_workers:
+                    while available_cuda_ids and len(running_jobs_by_sentinel) < num_workers:
                         try:
-                            ii, job_arg = next(args_iter)
+                            job_arg = next(args_iter)
                         except StopIteration:
                             break
-                        job = _submit(ii, job_arg, running_jobs_by_sentinel)
+                        job = _submit(
+                            job_arg,
+                            available_cuda_ids.popleft(),
+                            running_jobs_by_sentinel,
+                        )
                         running_jobs_by_pipe[job.result_pipe] = job
         finally:
             _shutdown_running_jobs(running_jobs_by_sentinel)
