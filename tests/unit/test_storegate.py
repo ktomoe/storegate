@@ -119,6 +119,12 @@ def test_init_with_data_id(tmp_path):
     assert sg.data_id == DATA_ID
 
 
+@pytest.mark.parametrize('chunk', [0, -1, 1.5, '100', False])
+def test_init_invalid_chunk_raises(tmp_path, chunk):
+    with pytest.raises(ValueError, match='chunk must be a positive integer'):
+        StoreGate(output_dir=str(tmp_path), mode='w', chunk=chunk)
+
+
 def test_set_data_id(sg):
     sg.set_data_id(DATA_ID)
     assert sg.data_id == DATA_ID
@@ -859,6 +865,65 @@ def test_copy_to_storage(sg_id):
     with sg_id.using_backend('zarr'):
         result = sg_id.get_data('x', 'train', None)
     np.testing.assert_array_equal(result, data)
+
+
+def test_copy_to_memory_streams_without_full_source_load(tmp_path):
+    sg = StoreGate(output_dir=str(tmp_path), mode='w', chunk=2, data_id=DATA_ID)
+    data = np.arange(12, dtype=np.float32).reshape(6, 2)
+    sg.add_data('x', data, phase='train')
+
+    with patch.object(
+        sg._db._db['zarr'],
+        'get_data',
+        side_effect=AssertionError('copy_to_memory should not full-load the source variable'),
+    ):
+        sg.copy_to_memory('x', phase='train')
+
+    with sg.using_backend('numpy'):
+        np.testing.assert_array_equal(sg.get_data('x', 'train', None), data)
+
+
+def test_copy_to_storage_streams_without_full_source_load(tmp_path):
+    sg = StoreGate(output_dir=str(tmp_path), mode='w', data_id=DATA_ID)
+    data = np.arange(12, dtype=np.float32).reshape(6, 2)
+
+    with sg.using_backend('numpy'):
+        sg.add_data('x', data[:2], phase='train')
+        sg.add_data('x', data[2:], phase='train')
+
+        with patch.object(
+            sg._db._db['numpy'],
+            'get_data',
+            side_effect=AssertionError('copy_to_storage should not full-load the source variable'),
+        ):
+            sg.copy_to_storage('x', phase='train')
+
+    with sg.using_backend('zarr'):
+        np.testing.assert_array_equal(sg.get_data('x', 'train', None), data)
+
+
+def test_copy_to_memory_rolls_back_partial_destination_on_failure(tmp_path):
+    sg = StoreGate(output_dir=str(tmp_path), mode='w', chunk=2, data_id=DATA_ID)
+    data = np.arange(12, dtype=np.float32).reshape(6, 2)
+    sg.add_data('x', data, phase='train')
+
+    numpy_db = sg._db._db['numpy']
+    original_add_data = numpy_db.add_data
+    add_calls = 0
+
+    def flaky_add_data(*args, **kwargs):
+        nonlocal add_calls
+        add_calls += 1
+        if add_calls == 2:
+            raise RuntimeError('boom')
+        return original_add_data(*args, **kwargs)
+
+    with patch.object(numpy_db, 'add_data', side_effect=flaky_add_data):
+        with pytest.raises(RuntimeError, match='boom'):
+            sg.copy_to_memory('x', phase='train')
+
+    with sg.using_backend('numpy'):
+        assert 'x' not in sg.get_var_names('train')
 
 
 # ---------------------------------------------------------------------------

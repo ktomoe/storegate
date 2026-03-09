@@ -1,4 +1,5 @@
 """ZarrDatabase module."""
+from collections.abc import Iterator
 from typing import Any, Literal, cast
 
 import numpy as np
@@ -8,6 +9,8 @@ from storegate import const
 from storegate.database.database import Database
 
 _STOREGATE_META_KEY = '_storegate_meta'
+_SNAPSHOT_ROOT_GROUP = '.storegate_snapshots'
+_RESTORE_TMP_ROOT_GROUP = '.storegate_restore_tmp'
 
 
 class ZarrDatabase(Database):
@@ -56,6 +59,61 @@ class ZarrDatabase(Database):
         if self._mode == 'r':
             return
         self._db[data_id].attrs[_STOREGATE_META_KEY] = meta
+
+    def _require_writable(self, operation: str) -> None:
+        if self._mode == 'r':
+            raise RuntimeError(
+                f'{operation}() requires write access to the zarr store; reopen with mode="w" or mode="a".'
+            )
+
+    @staticmethod
+    def _copy_attrs(src: Any, dst: Any) -> None:
+        for key, value in dict(src.attrs).items():
+            dst.attrs[key] = value
+
+    def _copy_array(self, src_group: Any, src_name: str, dst_group: Any, dst_name: str) -> None:
+        src_arr = src_group[src_name]
+        chunk_size = self._event_chunk_size(src_arr)
+        chunks = getattr(src_arr, 'chunks', None)
+
+        if src_arr.shape[0] == 0:
+            dst_arr = dst_group.create_array(
+                name=dst_name,
+                data=src_arr[0:0],
+                chunks=chunks,
+            )
+            self._copy_attrs(src_arr, dst_arr)
+            return
+
+        first = True
+        for start in range(0, src_arr.shape[0], chunk_size):
+            stop = min(start + chunk_size, src_arr.shape[0])
+            chunk = src_arr[start:stop]
+            if first:
+                dst_arr = dst_group.create_array(
+                    name=dst_name,
+                    data=chunk,
+                    chunks=chunks,
+                )
+                self._copy_attrs(src_arr, dst_arr)
+                first = False
+            else:
+                dst_group[dst_name].append(chunk)
+
+    def _copy_group_contents(self, src_group: Any, dst_group: Any) -> None:
+        self._copy_attrs(src_group, dst_group)
+
+        for group_name in src_group.group_keys():
+            child_dst = dst_group.require_group(group_name)
+            self._copy_group_contents(src_group[group_name], child_dst)
+
+        for array_name in src_group.array_keys():
+            self._copy_array(src_group, array_name, dst_group, array_name)
+
+    @staticmethod
+    def _delete_child_if_exists(parent: Any, child_name: str) -> None:
+        if child_name in parent.group_keys() or child_name in parent.array_keys():
+            del parent[child_name]
 
     def _bootstrap_var_names(self, data_id: str) -> None:
         raw_meta = self._db[data_id].attrs.get(_STOREGATE_META_KEY, {})
@@ -190,6 +248,24 @@ class ZarrDatabase(Database):
     def get_data(self, data_id: str, var_name: str, phase: str, index: int | slice | None) -> np.ndarray:
         return self._db[data_id][phase][var_name][self._normalize_index(index)]  # type: ignore[no-any-return]
 
+    def iter_data_chunks(
+        self,
+        data_id: str,
+        var_name: str,
+        phase: str,
+    ) -> Iterator[np.ndarray]:
+        """Yield zarr-backed chunks along the event axis."""
+        arr = self._db[data_id][phase][var_name]
+        chunk_size = self._event_chunk_size(arr)
+
+        if arr.shape[0] == 0:
+            yield arr[0:0]
+            return
+
+        for start in range(0, arr.shape[0], chunk_size):
+            stop = min(start + chunk_size, arr.shape[0])
+            yield arr[start:stop]
+
     def delete_data(self, data_id: str, var_name: str, phase: str) -> None:
         if var_name not in self._db[data_id][phase].array_keys():
             raise KeyError(f'"{var_name}" not found in {phase} phase.')
@@ -255,6 +331,68 @@ class ZarrDatabase(Database):
         saved_meta = self._load_storegate_meta(data_id)
         saved_meta.update(meta)
         self._save_storegate_meta(data_id, saved_meta)
+
+    def snapshot_data_id(self, data_id: str, snapshot_name: str) -> None:
+        """Save the current zarr state of ``data_id`` under ``snapshot_name``."""
+        self._require_writable('snapshot')
+        if data_id not in self._db.group_keys():
+            raise KeyError(f"data_id '{data_id}' not found.")
+
+        snapshot_root = self._db.require_group(_SNAPSHOT_ROOT_GROUP)
+        data_snapshots = snapshot_root.require_group(data_id)
+        if snapshot_name in data_snapshots.group_keys():
+            raise ValueError(
+                f"snapshot '{snapshot_name}' already exists for data_id '{data_id}'."
+            )
+
+        snapshot_group = data_snapshots.require_group(snapshot_name)
+        try:
+            self._copy_group_contents(self._db[data_id], snapshot_group)
+        except Exception:
+            self._delete_child_if_exists(data_snapshots, snapshot_name)
+            raise
+
+    def restore_data_id(self, data_id: str, snapshot_name: str) -> None:
+        """Replace ``data_id`` in the zarr store with ``snapshot_name``."""
+        self._require_writable('restore')
+
+        if _SNAPSHOT_ROOT_GROUP not in self._db.group_keys():
+            raise KeyError(f"snapshot '{snapshot_name}' not found for data_id '{data_id}'.")
+
+        snapshot_root = self._db[_SNAPSHOT_ROOT_GROUP]
+        if data_id not in snapshot_root.group_keys():
+            raise KeyError(f"snapshot '{snapshot_name}' not found for data_id '{data_id}'.")
+
+        data_snapshots = snapshot_root[data_id]
+        if snapshot_name not in data_snapshots.group_keys():
+            raise KeyError(f"snapshot '{snapshot_name}' not found for data_id '{data_id}'.")
+
+        snapshot_group = data_snapshots[snapshot_name]
+        restore_tmp_root = self._db.require_group(_RESTORE_TMP_ROOT_GROUP)
+        backup_name = f'{data_id}_{snapshot_name}'
+        suffix = 0
+        while backup_name in restore_tmp_root.group_keys():
+            suffix += 1
+            backup_name = f'{data_id}_{snapshot_name}_{suffix}'
+
+        had_existing = data_id in self._db.group_keys()
+        try:
+            if had_existing:
+                backup_group = restore_tmp_root.require_group(backup_name)
+                self._copy_group_contents(self._db[data_id], backup_group)
+
+            self._delete_child_if_exists(self._db, data_id)
+            restored_group = self._db.require_group(data_id)
+            self._copy_group_contents(snapshot_group, restored_group)
+        except Exception:
+            self._delete_child_if_exists(self._db, data_id)
+
+            if had_existing and backup_name in restore_tmp_root.group_keys():
+                restored_group = self._db.require_group(data_id)
+                self._copy_group_contents(restore_tmp_root[backup_name], restored_group)
+            raise
+        finally:
+            self._delete_child_if_exists(restore_tmp_root, backup_name)
 
     def close(self) -> None:
         self._db.store.close()

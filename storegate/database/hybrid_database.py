@@ -1,4 +1,5 @@
 """HybridDatabase module."""
+from collections.abc import Iterator
 from typing import Any
 
 import numpy as np
@@ -69,6 +70,28 @@ class HybridDatabase(Database):
     def get_pending_var_names(self) -> dict[str, dict[str, list[str]]]:
         """Return variable names currently held in the numpy (memory) backend."""
         return self._db['numpy'].get_pending_var_names()
+
+    def iter_data_chunks(
+        self,
+        data_id: str,
+        var_name: str,
+        phase: str,
+    ) -> Iterator[np.ndarray]:
+        """Yield chunks from the currently active backend."""
+        backend = self._db[self._backend]
+        yield from backend.iter_data_chunks(data_id, var_name, phase)
+
+    def clear_data_id(self, data_id: str) -> None:
+        """Discard in-memory state for ``data_id`` while leaving zarr intact."""
+        self._db['numpy'].clear_data_id(data_id)
+
+    def snapshot_data_id(self, data_id: str, snapshot_name: str) -> None:
+        """Delegate snapshot creation to the zarr backend."""
+        self._db['zarr'].snapshot_data_id(data_id, snapshot_name)
+
+    def restore_data_id(self, data_id: str, snapshot_name: str) -> None:
+        """Delegate snapshot restore to the zarr backend."""
+        self._db['zarr'].restore_data_id(data_id, snapshot_name)
 
     def close(self) -> None:
         for db in self._db.values():

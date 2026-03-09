@@ -195,6 +195,71 @@ def test_zarr_data_persists_multiple_phases(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Snapshot / restore
+# ---------------------------------------------------------------------------
+
+def test_snapshot_restore_round_trip_restores_data_and_metadata(tmp_path):
+    sg = _make_store(tmp_path)
+    train = np.arange(12, dtype=np.float32).reshape(6, 2)
+    valid = np.arange(4, dtype=np.float32).reshape(2, 2)
+
+    sg.add_data('x', train, phase='train')
+    sg.add_data('x', valid, phase='valid')
+    sg.compile()
+    sg.snapshot('baseline')
+
+    sg.update_data('x', np.full((2,), 99.0, dtype=np.float32), phase='train', index=0)
+    sg.add_data('y', np.array([[1.0], [2.0]], dtype=np.float32), phase='valid')
+    sg.compile()
+
+    sg.restore('baseline')
+
+    assert sg.get_backend() == 'zarr'
+    np.testing.assert_array_equal(sg.get_data('x', 'train', None), train)
+    np.testing.assert_array_equal(sg.get_data('x', 'valid', None), valid)
+    assert 'y' not in sg.get_var_names('valid')
+    assert len(sg['train']) == 6
+    assert len(sg['valid']) == 2
+
+
+def test_snapshot_restore_clears_numpy_backend_for_current_data_id(tmp_path):
+    sg = _make_store(tmp_path)
+    train = np.arange(6, dtype=np.float32).reshape(3, 2)
+
+    sg.add_data('x', train, phase='train')
+    sg.compile()
+    sg.snapshot('baseline')
+    sg.copy_to_memory('x', phase='train')
+    with sg.using_backend('numpy'):
+        sg.add_data('cache_only', np.ones((3, 1), dtype=np.float32), phase='train')
+
+    sg.update_data('x', np.full((2,), 77.0, dtype=np.float32), phase='train', index=0)
+    sg.restore('baseline')
+
+    np.testing.assert_array_equal(sg.get_data('x', 'train', None), train)
+    assert sg.get_backend() == 'zarr'
+    with sg.using_backend('numpy'):
+        assert sg.get_var_names('train') == []
+
+
+def test_snapshot_duplicate_name_raises(tmp_path):
+    sg = _make_store(tmp_path)
+    sg.add_data('x', np.array([[1.0]], dtype=np.float32), phase='train')
+    sg.snapshot('baseline')
+
+    with pytest.raises(ValueError, match='already exists'):
+        sg.snapshot('baseline')
+
+
+def test_restore_missing_snapshot_raises(tmp_path):
+    sg = _make_store(tmp_path)
+    sg.add_data('x', np.array([[1.0]], dtype=np.float32), phase='train')
+
+    with pytest.raises(KeyError, match='missing'):
+        sg.restore('missing')
+
+
+# ---------------------------------------------------------------------------
 # Multiple data_id
 # ---------------------------------------------------------------------------
 

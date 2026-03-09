@@ -176,6 +176,15 @@ def _validate_var_name(var_name: str) -> None:
         )
 
 
+def _validate_snapshot_name(snapshot_name: str) -> None:
+    """Raise ValueError if snapshot_name contains invalid characters."""
+    if not isinstance(snapshot_name, str) or not _VALID_IDENTIFIER.match(snapshot_name):
+        raise ValueError(
+            f"Invalid snapshot_name {snapshot_name!r}. "
+            "Must be 1-128 characters: alphanumeric, underscore, or hyphen only."
+        )
+
+
 def _validate_phase(phase: str, allow_all: bool = False) -> None:
     """Raise ValueError if phase is not a valid phase name."""
     valid = const.PHASES + ('all',) if allow_all else const.PHASES
@@ -210,6 +219,18 @@ def _validate_output_dir(output_dir: str, mode: str) -> None:
     if mode in ('w', 'a') and not path.parent.exists():
         raise ValueError(
             f"Parent directory of output_dir does not exist: {path.parent!r}"
+        )
+
+
+def _validate_chunk(chunk: int) -> None:
+    """Raise ValueError if chunk is not a positive integer."""
+    if not isinstance(chunk, int) or isinstance(chunk, bool):
+        raise ValueError(
+            f'chunk must be a positive integer, got: {chunk!r}'
+        )
+    if chunk <= 0:
+        raise ValueError(
+            f'chunk must be a positive integer, got: {chunk!r}'
         )
 
 
@@ -265,6 +286,7 @@ class StoreGate:
         """
 
         _validate_output_dir(output_dir, mode)
+        _validate_chunk(chunk)
         output_dir = str(Path(output_dir).resolve())
         self._db: HybridDatabase = HybridDatabase(output_dir=output_dir, mode=mode, chunk=chunk)
         self._data_id: str | None = None
@@ -541,14 +563,22 @@ class StoreGate:
         if output_var_name is not None:
             _validate_var_name(output_var_name)
         output_var_name = output_var_name or var_name
-
-        with self.using_backend(src_backend):
-            tmp_data = self.get_data(var_name, phase=phase)
+        data_id = self._require_current_data_id()
 
         with self.using_backend(dst_backend):
             if output_var_name in self.get_var_names(phase):
                 raise ValueError(f'{output_var_name} already exists in {dst_label}. Delete first or use a different output_var_name.')
-            self.add_data(output_var_name, tmp_data, phase)
+
+        try:
+            with self.using_backend(src_backend):
+                for chunk in self._db.iter_data_chunks(data_id, var_name, phase):
+                    with self.using_backend(dst_backend):
+                        self.add_data(output_var_name, chunk, phase)
+        except Exception:
+            with self.using_backend(dst_backend):
+                if output_var_name in self.get_var_names(phase):
+                    self.delete_data(output_var_name, phase)
+            raise
 
 
     @require_data_id
@@ -562,6 +592,33 @@ class StoreGate:
             output_var_name=output_var_name,
             dst_label='storage',
         )
+
+    @require_data_id
+    def snapshot(self, snapshot_name: str) -> None:
+        """Save the current zarr-backed state of ``data_id`` as ``snapshot_name``."""
+        _validate_snapshot_name(snapshot_name)
+        data_id = self._require_current_data_id()
+        self._db.snapshot_data_id(data_id, snapshot_name)
+
+    @require_data_id
+    def restore(self, snapshot_name: str) -> None:
+        """Restore the current ``data_id`` from a previously saved zarr snapshot.
+
+        Note:
+            Restore replaces only the zarr backend contents. Any numpy
+            (in-memory) backend data for the current ``data_id`` is discarded,
+            and the active backend is switched to ``'zarr'`` afterwards.
+        """
+        _validate_snapshot_name(snapshot_name)
+        data_id = self._require_current_data_id()
+        self._db.restore_data_id(data_id, snapshot_name)
+        self._db.clear_data_id(data_id)
+        self._db.set_backend('zarr')
+        self._metadata[data_id] = {
+            'compiled': {backend: False for backend in _SUPPORTED_BACKENDS},
+            'sizes': {backend: {} for backend in _SUPPORTED_BACKENDS},
+        }
+        self._load_meta(data_id)
 
 
     @require_data_id

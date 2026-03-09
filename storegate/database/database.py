@@ -1,5 +1,6 @@
 """Module to define Database abstraction."""
 from abc import ABCMeta, abstractmethod
+from collections.abc import Iterator
 from typing import Any
 
 import numpy as np
@@ -149,6 +150,31 @@ class Database(metaclass=ABCMeta):
         Backends without a pending/in-memory concept return an empty result.
         """
         return {}
+
+    def iter_data_chunks(
+        self,
+        data_id: str,
+        var_name: str,
+        phase: str,
+    ) -> Iterator[np.ndarray]:
+        """Yield one or more event-axis chunks for a variable.
+
+        Backends override this to stream data without materializing the full
+        variable in memory. The default implementation falls back to a single
+        full-array read for compatibility.
+        """
+        yield self.get_data(data_id, var_name, phase, None)
+
+    def clear_data_id(self, data_id: str) -> None:
+        """Discard any backend state for ``data_id`` when supported."""
+
+    def snapshot_data_id(self, data_id: str, snapshot_name: str) -> None:
+        """Persist a point-in-time snapshot for ``data_id`` when supported."""
+        raise NotImplementedError
+
+    def restore_data_id(self, data_id: str, snapshot_name: str) -> None:
+        """Restore ``data_id`` from a previously saved snapshot when supported."""
+        raise NotImplementedError
 
     @abstractmethod
     def close(self) -> None:

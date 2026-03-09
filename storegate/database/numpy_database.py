@@ -1,4 +1,5 @@
 """NumpyDatabase module."""
+from collections.abc import Iterator
 from typing import Any
 
 import numpy as np
@@ -167,6 +168,25 @@ class NumpyDatabase(Database):
                 if vars_:
                     result.setdefault(data_id, {})[phase] = list(vars_.keys())
         return result
+
+    def iter_data_chunks(
+        self,
+        data_id: str,
+        var_name: str,
+        phase: str,
+    ) -> Iterator[np.ndarray]:
+        """Yield the currently buffered chunks for ``var_name`` in insertion order."""
+        for chunk in self._chunks[data_id][phase][var_name]:
+            yield chunk
+
+    def clear_data_id(self, data_id: str) -> None:
+        """Discard all in-memory state for ``data_id`` only."""
+        if data_id not in self._chunks:
+            return
+        del self._chunks[data_id]
+        del self._cache[data_id]
+        del self._metadata[data_id]
+        self.initialize(data_id)
 
     def close(self) -> None:
         """Release all in-memory data held by this database.
