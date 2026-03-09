@@ -33,15 +33,57 @@ def capture_log():
 
 
 @pytest.fixture
-def sg(tmp_path):
-    return StoreGate(output_dir=str(tmp_path), mode='w')
-
-
-@pytest.fixture
 def sg_id(tmp_path):
     store = StoreGate(output_dir=str(tmp_path), mode='w')
     store.set_data_id(DATA_ID)
     return store
+
+
+def _log_text(messages: list[str]) -> str:
+    return '\n'.join(messages)
+
+
+def _seed_var(
+    sg: StoreGate,
+    phase: str,
+    *,
+    var_name: str = 'x',
+    data: np.ndarray | None = None,
+) -> np.ndarray:
+    data = np.array([[1.0]]) if data is None else data
+    sg.add_data(var_name, data, phase=phase)
+    return data
+
+
+def _seed_var_in_phases(
+    sg: StoreGate,
+    phases: tuple[str, ...],
+    *,
+    var_name: str = 'x',
+) -> None:
+    for value, phase in enumerate(phases, start=1):
+        _seed_var(sg, phase, var_name=var_name, data=np.array([[float(value)]]))
+
+
+def _configure_cross_backend(
+    sg: StoreGate,
+    *,
+    phase: str = 'train',
+    zarr_var_name: str | None = None,
+    zarr_data: np.ndarray | None = None,
+    numpy_var_name: str | None = None,
+    numpy_data: np.ndarray | None = None,
+) -> None:
+    if zarr_var_name is not None and zarr_data is not None:
+        sg.add_data(zarr_var_name, zarr_data, phase=phase)
+    if numpy_var_name is not None and numpy_data is not None:
+        with sg.using_backend('numpy'):
+            sg.add_data(numpy_var_name, numpy_data, phase=phase)
+
+
+def _show_info_text(sg: StoreGate, capture_log: list[str]) -> str:
+    sg.show_info()
+    return _log_text(capture_log)
 
 
 # ---------------------------------------------------------------------------
@@ -56,24 +98,19 @@ def test_init_data_id_is_none(sg):
 # output_dir validation
 # ---------------------------------------------------------------------------
 
-def test_init_invalid_mode_raises(tmp_path):
-    with pytest.raises(ValueError, match="Invalid mode"):
-        StoreGate(output_dir=str(tmp_path), mode='x')
-
-
-def test_init_empty_output_dir_raises(tmp_path):
-    with pytest.raises(ValueError, match="non-empty string"):
-        StoreGate(output_dir='', mode='w')
-
-
-def test_init_readonly_nonexistent_path_raises(tmp_path):
-    with pytest.raises(ValueError, match="does not exist"):
-        StoreGate(output_dir=str(tmp_path / 'missing'), mode='r')
-
-
-def test_init_write_nonexistent_parent_raises(tmp_path):
-    with pytest.raises(ValueError, match="Parent directory"):
-        StoreGate(output_dir=str(tmp_path / 'missing' / 'store'), mode='w')
+@pytest.mark.parametrize(
+    ('output_dir', 'mode', 'message'),
+    [
+        ('__TMP__', 'x', 'Invalid mode'),
+        ('', 'w', 'non-empty string'),
+        ('__TMP__/missing', 'r', 'does not exist'),
+        ('__TMP__/missing/store', 'w', 'Parent directory'),
+    ],
+)
+def test_init_invalid_arguments_raise(tmp_path, output_dir, mode, message):
+    resolved_output_dir = output_dir.replace('__TMP__', str(tmp_path))
+    with pytest.raises(ValueError, match=message):
+        StoreGate(output_dir=resolved_output_dir, mode=mode)
 
 
 def test_init_with_data_id(tmp_path):
@@ -154,19 +191,21 @@ def test_context_manager(tmp_path):
 # require_data_id decorator
 # ---------------------------------------------------------------------------
 
-def test_add_data_requires_data_id(sg):
-    with pytest.raises(RuntimeError, match='set_data_id'):
-        sg.add_data('x', np.array([[1.0]]), phase='train')
-
-
-def test_get_data_requires_data_id(sg):
-    with pytest.raises(RuntimeError):
-        sg.get_data('x', 'train')
-
-
-def test_compile_requires_data_id(sg):
-    with pytest.raises(RuntimeError):
-        sg.compile()
+@pytest.mark.parametrize(
+    ('operation', 'message'),
+    [
+        (lambda sg: sg.add_data('x', np.array([[1.0]]), phase='train'), 'set_data_id'),
+        (lambda sg: sg.get_data('x', 'train'), None),
+        (lambda sg: sg.compile(), None),
+    ],
+)
+def test_methods_require_data_id(sg, operation, message):
+    if message is None:
+        with pytest.raises(RuntimeError):
+            operation(sg)
+        return
+    with pytest.raises(RuntimeError, match=message):
+        operation(sg)
 
 
 # ---------------------------------------------------------------------------
@@ -177,14 +216,20 @@ def test_default_backend_is_zarr(sg_id):
     assert sg_id.get_backend() == 'zarr'
 
 
-def test_set_backend_numpy(sg_id):
-    sg_id.set_backend('numpy')
-    assert sg_id.get_backend() == 'numpy'
-
-
-def test_set_backend_invalid_raises(sg_id):
-    with pytest.raises(ValueError, match='Unsupported backend'):
-        sg_id.set_backend('invalid')
+@pytest.mark.parametrize(
+    ('backend', 'expected', 'message'),
+    [
+        ('numpy', 'numpy', None),
+        ('invalid', None, 'Unsupported backend'),
+    ],
+)
+def test_set_backend_behaviour(sg_id, backend, expected, message):
+    if message is not None:
+        with pytest.raises(ValueError, match=message):
+            sg_id.set_backend(backend)
+        return
+    sg_id.set_backend(backend)
+    assert sg_id.get_backend() == expected
 
 
 def test_using_backend_switches_and_restores(sg_id):
@@ -288,40 +333,33 @@ def test_delete_data_single_phase(sg_id):
     assert 'x' not in sg_id.get_var_names('train')
 
 
-def test_delete_data_all_phases(sg_id):
-    sg_id.add_data('x', np.array([[1.0]]), phase='train')
-    sg_id.add_data('x', np.array([[2.0]]), phase='valid')
-    sg_id.add_data('x', np.array([[3.0]]), phase='test')
-    sg_id.delete_data('x', phase='all')
-
-    assert 'x' not in sg_id.get_var_names('train')
-    assert 'x' not in sg_id.get_var_names('valid')
-    assert 'x' not in sg_id.get_var_names('test')
-
-
-def test_delete_data_all_phases_partial_existence(sg_id):
-    # 'x' exists only in train and valid, not in test
-    sg_id.add_data('x', np.array([[1.0]]), phase='train')
-    sg_id.add_data('x', np.array([[2.0]]), phase='valid')
+@pytest.mark.parametrize(
+    'phases',
+    [
+        ('train', 'valid', 'test'),
+        ('train', 'valid'),
+    ],
+)
+def test_delete_data_all_phases(sg_id, phases):
+    _seed_var_in_phases(sg_id, phases)
     sg_id.delete_data('x', phase='all')  # should not raise KeyError
 
-    assert 'x' not in sg_id.get_var_names('train')
-    assert 'x' not in sg_id.get_var_names('valid')
-    assert 'x' not in sg_id.get_var_names('test')
+    for phase in ('train', 'valid', 'test'):
+        assert 'x' not in sg_id.get_var_names(phase)
 
 
-def test_get_var_names(sg_id):
-    sg_id.add_data('x', np.array([[1.0]]), phase='train')
-    sg_id.add_data('y', np.array([[2.0]]), phase='train')
+@pytest.mark.parametrize(
+    ('seed_names', 'expected_names'),
+    [
+        (('x', 'y'), ('x', 'y')),
+        ((), ()),
+    ],
+)
+def test_get_var_names(sg_id, seed_names, expected_names):
+    for index, name in enumerate(seed_names, start=1):
+        _seed_var(sg_id, 'train', var_name=name, data=np.array([[float(index)]]))
 
-    names = sg_id.get_var_names('train')
-    assert 'x' in names
-    assert 'y' in names
-
-
-def test_get_var_names_empty_phase(sg_id):
-    names = sg_id.get_var_names('train')
-    assert names == []
+    assert tuple(sg_id.get_var_names('train')) == expected_names
 
 
 # ---------------------------------------------------------------------------
@@ -380,19 +418,6 @@ def test_compile_cross_backend_default_false_does_not_check(sg_id):
     sg_id.compile()  # should not raise (cross_backend=False)
 
 
-def test_compile_cross_backend_raises_when_var_missing_in_numpy(sg_id):
-    sg_id.add_data('x', np.array([[1.0], [2.0]]), phase='train')  # zarr only
-    with pytest.raises(ValueError, match=r"'x'.*missing in numpy"):
-        sg_id.compile(cross_backend=True)
-
-
-def test_compile_cross_backend_raises_when_var_missing_in_zarr(sg_id):
-    with sg_id.using_backend('numpy'):
-        sg_id.add_data('y', np.array([[9.0]]), phase='train')      # numpy only
-    with pytest.raises(ValueError, match=r"'y'.*missing in zarr"):
-        sg_id.compile(cross_backend=True)
-
-
 def test_compile_cross_backend_passes_when_metadata_match(sg_id):
     data = np.array([[1.0], [2.0]])
     sg_id.add_data('x', data, phase='train')                      # zarr: 2
@@ -400,51 +425,77 @@ def test_compile_cross_backend_passes_when_metadata_match(sg_id):
     sg_id.compile(cross_backend=True)  # should not raise
 
 
-def test_compile_cross_backend_raises_on_count_mismatch(sg_id):
-    sg_id.add_data('x', np.array([[1.0], [2.0]]), phase='train')  # zarr: 2
-    with sg_id.using_backend('numpy'):
-        sg_id.add_data('x', np.array([[9.0]]), phase='train')     # numpy: 1
-    with pytest.raises(ValueError, match='Cross-backend inconsistency'):
-        sg_id.compile(cross_backend=True)
-
-
-def test_compile_cross_backend_error_contains_var_name(sg_id):
-    sg_id.add_data('score', np.array([[1.0], [2.0]]), phase='train')
-    with sg_id.using_backend('numpy'):
-        sg_id.add_data('score', np.array([[9.0]]), phase='train')
-    with pytest.raises(ValueError, match="'score'"):
-        sg_id.compile(cross_backend=True)
-
-
-def test_compile_cross_backend_error_contains_phase(sg_id):
-    sg_id.add_data('x', np.array([[1.0], [2.0]]), phase='valid')
-    with sg_id.using_backend('numpy'):
-        sg_id.add_data('x', np.array([[9.0]]), phase='valid')
-    with pytest.raises(ValueError, match="'valid'"):
-        sg_id.compile(cross_backend=True)
-
-
-def test_compile_cross_backend_error_contains_counts(sg_id):
-    sg_id.add_data('x', np.array([[1.0], [2.0], [3.0]]), phase='train')  # zarr: 3
-    with sg_id.using_backend('numpy'):
-        sg_id.add_data('x', np.array([[9.0]]), phase='train')             # numpy: 1
-    with pytest.raises(ValueError, match=r'zarr=3.*numpy=1|numpy=1.*zarr=3'):
-        sg_id.compile(cross_backend=True)
-
-
-def test_compile_cross_backend_raises_on_type_mismatch(sg_id):
-    sg_id.add_data('x', np.array([[1.0], [2.0]], dtype=np.float32), phase='train')
-    with sg_id.using_backend('numpy'):
-        sg_id.add_data('x', np.array([[1], [2]], dtype=np.int64), phase='train')
-    with pytest.raises(ValueError, match=r'type: zarr=float32, numpy=int64'):
-        sg_id.compile(cross_backend=True)
-
-
-def test_compile_cross_backend_raises_on_shape_mismatch(sg_id):
-    sg_id.add_data('x', np.array([[1.0], [2.0]], dtype=np.float32), phase='train')
-    with sg_id.using_backend('numpy'):
-        sg_id.add_data('x', np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32), phase='train')
-    with pytest.raises(ValueError, match=r'shape: zarr=\(1,\), numpy=\(2,\)'):
+@pytest.mark.parametrize(
+    ('phase', 'zarr_var_name', 'zarr_data', 'numpy_var_name', 'numpy_data', 'message'),
+    [
+        (
+            'train',
+            'x',
+            np.array([[1.0], [2.0]]),
+            None,
+            None,
+            r"'x'.*missing in numpy",
+        ),
+        (
+            'train',
+            None,
+            None,
+            'y',
+            np.array([[9.0]]),
+            r"'y'.*missing in zarr",
+        ),
+        (
+            'valid',
+            'x',
+            np.array([[1.0], [2.0]]),
+            'x',
+            np.array([[9.0]]),
+            r"'x'.*'valid'.*zarr=2.*numpy=1|zarr=2.*numpy=1.*'x'.*'valid'",
+        ),
+        (
+            'train',
+            'score',
+            np.array([[1.0], [2.0]], dtype=np.float32),
+            'score',
+            np.array([[9.0]], dtype=np.float32),
+            r"'score'.*zarr=2.*numpy=1|zarr=2.*numpy=1.*'score'",
+        ),
+        (
+            'train',
+            'x',
+            np.array([[1.0], [2.0]], dtype=np.float32),
+            'x',
+            np.array([[1], [2]], dtype=np.int64),
+            r'type: zarr=float32, numpy=int64',
+        ),
+        (
+            'train',
+            'x',
+            np.array([[1.0], [2.0]], dtype=np.float32),
+            'x',
+            np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32),
+            r'shape: zarr=\(1,\), numpy=\(2,\)',
+        ),
+    ],
+)
+def test_compile_cross_backend_detects_mismatches(
+    sg_id,
+    phase,
+    zarr_var_name,
+    zarr_data,
+    numpy_var_name,
+    numpy_data,
+    message,
+):
+    _configure_cross_backend(
+        sg_id,
+        phase=phase,
+        zarr_var_name=zarr_var_name,
+        zarr_data=zarr_data,
+        numpy_var_name=numpy_var_name,
+        numpy_data=numpy_data,
+    )
+    with pytest.raises(ValueError, match=message):
         sg_id.compile(cross_backend=True)
 
 
@@ -518,29 +569,19 @@ def test_all_phase_accessor_delitem_removes_from_all_phases(sg_id):
     assert 'x' not in sg_id.get_var_names('valid')
 
 
-def test_all_phase_accessor_getitem_raises(sg_id):
-    with pytest.raises(NotImplementedError, match="sg\\['all'\\]"):
-        _ = sg_id['all']['x']
-
-
-def test_all_phase_accessor_setitem_raises(sg_id):
-    with pytest.raises(NotImplementedError, match="sg\\['all'\\]"):
-        sg_id['all']['x'] = np.array([[1.0]])
-
-
-def test_all_phase_accessor_contains_raises(sg_id):
-    with pytest.raises(NotImplementedError, match="sg\\['all'\\]"):
-        _ = 'x' in sg_id['all']
-
-
-def test_all_phase_accessor_iter_raises(sg_id):
-    with pytest.raises(NotImplementedError, match="sg\\['all'\\]"):
-        _ = list(sg_id['all'])
-
-
-def test_all_phase_accessor_len_raises(sg_id):
-    with pytest.raises(NotImplementedError, match="sg\\['all'\\]"):
-        len(sg_id['all'])
+@pytest.mark.parametrize(
+    'operation',
+    [
+        lambda accessor: accessor['x'],
+        lambda accessor: accessor.__setitem__('x', np.array([[1.0]])),
+        lambda accessor: 'x' in accessor,
+        lambda accessor: list(accessor),
+        lambda accessor: len(accessor),
+    ],
+)
+def test_all_phase_accessor_unsupported_operations_raise(sg_id, operation):
+    with pytest.raises(NotImplementedError, match=r"sg\['all'\]"):
+        operation(sg_id['all'])
 
 
 def test_getitem_invalid_phase_raises(sg_id):
@@ -637,18 +678,17 @@ def test_var_accessor_setitem(sg_id):
     np.testing.assert_array_equal(result, [99.0, 99.0])
 
 
-def test_var_accessor_getitem_invalid_type_raises(sg_id):
-    sg_id.add_data('x', np.array([[1.0]]), phase='train')
-
-    with pytest.raises(NotImplementedError):
-        _ = sg_id['train']['x']['bad_index']
-
-
-def test_var_accessor_setitem_invalid_type_raises(sg_id):
-    sg_id.add_data('x', np.array([[1.0]]), phase='train')
-
-    with pytest.raises(ValueError):
-        sg_id['train']['x']['bad_index'] = np.array([1.0])
+@pytest.mark.parametrize(
+    ('operation', 'error_type'),
+    [
+        (lambda accessor: accessor['bad_index'], NotImplementedError),
+        (lambda accessor: accessor.__setitem__('bad_index', np.array([1.0])), ValueError),
+    ],
+)
+def test_var_accessor_invalid_type_raises(sg_id, operation, error_type):
+    _seed_var(sg_id, 'train')
+    with pytest.raises(error_type):
+        operation(sg_id['train']['x'])
 
 
 # ---------------------------------------------------------------------------
@@ -710,94 +750,32 @@ def test_show_info_runs_without_error(sg_id):
     sg_id.show_info()  # should not raise
 
 
-def test_show_info_displays_var_name(sg_id, capture_log):
-    sg_id.add_data('x', np.array([[1.0], [2.0]]), phase='train')
-    sg_id.compile()
-    sg_id.show_info()
-    text = '\n'.join(capture_log)
-    assert 'x' in text
-
-
-def test_show_info_displays_data_id(sg_id, capture_log):
-    sg_id.add_data('x', np.array([[1.0]]), phase='train')
-    sg_id.compile()
-    sg_id.show_info()
-    text = '\n'.join(capture_log)
-    assert DATA_ID in text
-
-
-def test_show_info_displays_compiled_status(sg_id, capture_log):
-    sg_id.add_data('x', np.array([[1.0]]), phase='train')
-    sg_id.compile()
-    sg_id.show_info()
-    text = '\n'.join(capture_log)
-    assert 'True' in text
-
-
-def test_show_info_before_compile_shows_false(sg_id, capture_log):
-    sg_id.add_data('x', np.array([[1.0]]), phase='train')
-    sg_id.show_info()
-    text = '\n'.join(capture_log)
-    assert 'False' in text
-
-
-def test_show_info_multiple_phases(sg_id, capture_log):
-    sg_id.add_data('x', np.array([[1.0]]), phase='train')
-    sg_id.add_data('x', np.array([[2.0]]), phase='valid')
-    sg_id.compile()
-    sg_id.show_info()
-    text = '\n'.join(capture_log)
-    assert 'train' in text
-    assert 'valid' in text
-
-
-def test_show_info_multiple_variables(sg_id, capture_log):
-    sg_id.add_data('x', np.array([[1.0], [2.0]]), phase='train')
-    sg_id.add_data('y', np.array([[3.0], [4.0]]), phase='train')
-    sg_id.compile()
-    sg_id.show_info()
-    text = '\n'.join(capture_log)
-    assert 'x' in text
-    assert 'y' in text
-
-
-def test_show_info_empty_storegate(sg_id, capture_log):
-    sg_id.compile()
-    sg_id.show_info()
-    text = '\n'.join(capture_log)
-    assert DATA_ID in text
-
-
-def test_show_info_displays_dtype(sg_id, capture_log):
-    sg_id.add_data('x', np.array([[1.0]], dtype=np.float32), phase='train')
-    sg_id.compile()
-    sg_id.show_info()
-    text = '\n'.join(capture_log)
-    assert 'float32' in text
-
-
-def test_show_info_displays_total_events(sg_id, capture_log):
-    sg_id.add_data('x', np.array([[1.0], [2.0], [3.0]]), phase='train')
-    sg_id.compile()
-    sg_id.show_info()
-    text = '\n'.join(capture_log)
-    assert '3' in text
-
-
-def test_show_info_displays_shape(sg_id, capture_log):
-    sg_id.add_data('x', np.array([[1.0, 2.0], [3.0, 4.0]]), phase='train')
-    sg_id.compile()
-    sg_id.show_info()
-    text = '\n'.join(capture_log)
-    assert '(2,)' in text
-
-
-def test_show_info_displays_backend(sg_id, capture_log):
-    sg_id.add_data('x', np.array([[1.0]]), phase='train')
-    sg_id.compile()
-    sg_id.show_info()
-    text = '\n'.join(capture_log)
-    assert 'zarr' in text
+@pytest.mark.parametrize(
+    ('setup', 'expected_tokens'),
+    [
+        (lambda sg: (_seed_var(sg, 'train', data=np.array([[1.0], [2.0]])), sg.compile()), ('x', DATA_ID, 'True')),
+        (lambda sg: _seed_var(sg, 'train'), ('False',)),
+        (lambda sg: (_seed_var(sg, 'train'), _seed_var(sg, 'valid')), ('train', 'valid')),
+        (
+            lambda sg: (
+                _seed_var(sg, 'train', var_name='x', data=np.array([[1.0], [2.0]])),
+                _seed_var(sg, 'train', var_name='y', data=np.array([[3.0], [4.0]])),
+                sg.compile(),
+            ),
+            ('x', 'y'),
+        ),
+        (lambda sg: sg.compile(), (DATA_ID,)),
+        (lambda sg: (_seed_var(sg, 'train', data=np.array([[1.0]], dtype=np.float32)), sg.compile()), ('float32',)),
+        (lambda sg: (_seed_var(sg, 'train', data=np.array([[1.0], [2.0], [3.0]])), sg.compile()), ('3',)),
+        (lambda sg: (_seed_var(sg, 'train', data=np.array([[1.0, 2.0], [3.0, 4.0]])), sg.compile()), ('(2,)',)),
+        (lambda sg: (_seed_var(sg, 'train'), sg.compile()), ('zarr',)),
+    ],
+)
+def test_show_info_outputs_expected_tokens(sg_id, capture_log, setup, expected_tokens):
+    setup(sg_id)
+    text = _show_info_text(sg_id, capture_log)
+    for token in expected_tokens:
+        assert token in text
 
 
 def test_compile_show_info_true_calls_show_info(sg_id, capture_log):
@@ -838,30 +816,18 @@ def test_copy_to_storage_already_exists_raises(tmp_path):
 # Additional coverage tests — uncovered lines
 # ---------------------------------------------------------------------------
 
-def test_add_data_scalar_raises(sg_id):
-    """Line 407: scalar (0-dim) data must be rejected."""
-    with pytest.raises(ValueError, match='at least 1-dimensional'):
-        sg_id.add_data('x', 42, phase='train')
-
-
-def test_add_data_scalar_numpy_raises(sg_id):
-    """Line 407: 0-dim numpy array must be rejected."""
-    with pytest.raises(ValueError, match='at least 1-dimensional'):
-        sg_id.add_data('x', np.float64(3.14), phase='train')
-
-
-def test_invalid_var_name_raises(sg_id):
-    """Line 172: invalid var_name triggers ValueError."""
-    data = np.array([[1.0]])
-    with pytest.raises(ValueError, match='Invalid var_name'):
-        sg_id.add_data('bad name!', data, phase='train')
-
-
-def test_invalid_var_name_empty_raises(sg_id):
-    """Line 172: empty string var_name triggers ValueError."""
-    data = np.array([[1.0]])
-    with pytest.raises(ValueError, match='Invalid var_name'):
-        sg_id.add_data('', data, phase='train')
+@pytest.mark.parametrize(
+    ('var_name', 'data', 'message'),
+    [
+        ('x', 42, 'at least 1-dimensional'),
+        ('x', np.float64(3.14), 'at least 1-dimensional'),
+        ('bad name!', np.array([[1.0]]), 'Invalid var_name'),
+        ('', np.array([[1.0]]), 'Invalid var_name'),
+    ],
+)
+def test_add_data_input_validation(sg_id, var_name, data, message):
+    with pytest.raises(ValueError, match=message):
+        sg_id.add_data(var_name, data, phase='train')
 
 
 def test_close_warns_unsaved_numpy_data(tmp_path, capture_log):
@@ -877,22 +843,19 @@ def test_close_warns_unsaved_numpy_data(tmp_path, capture_log):
     assert 'x' in text
 
 
+@pytest.mark.parametrize(
+    'accessor_factory',
+    [
+        lambda sg: sg['train'],
+        lambda sg: _AllPhaseAccessor(sg),
+    ],
+)
+def test_accessor_delitem_non_str_raises(sg_id, accessor_factory):
+    accessor = accessor_factory(sg_id)
+    with pytest.raises(ValueError, match='must be str'):
+        del accessor[123]
+
+
 def test_phase_accessor_setitem_non_str_raises(sg_id):
-    """Line 37: _PhaseAccessor.__setitem__ with non-str key."""
-    accessor = sg_id['train']
     with pytest.raises(ValueError, match='must be str'):
-        accessor[123] = np.array([[1.0]])
-
-
-def test_phase_accessor_delitem_non_str_raises(sg_id):
-    """Line 42: _PhaseAccessor.__delitem__ with non-str key."""
-    accessor = sg_id['train']
-    with pytest.raises(ValueError, match='must be str'):
-        del accessor[123]
-
-
-def test_all_phase_accessor_delitem_non_str_raises(sg_id):
-    """Line 85: _AllPhaseAccessor.__delitem__ with non-str key."""
-    accessor = _AllPhaseAccessor(sg_id)
-    with pytest.raises(ValueError, match='must be str'):
-        del accessor[123]
+        sg_id['train'][123] = np.array([[1.0]])

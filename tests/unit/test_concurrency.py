@@ -15,7 +15,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import numpy as np
-import pytest
 
 from storegate import StoreGate
 from storegate.database.numpy_database import NumpyDatabase

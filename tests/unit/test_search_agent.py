@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import json
+import random
 import signal
 import time
 import pytest
 from unittest.mock import MagicMock
 
-from storegate.agent.search_agent import SearchAgent, _terminate_executor_processes
+from storegate.agent.search_agent import SearchAgent, _RunningJob, _shutdown_running_jobs
 from storegate.agent.grid_search_agent import GridSearchAgent
 from storegate.agent.random_search_agent import RandomSearchAgent
 
@@ -72,7 +73,7 @@ class _VerySlowTask:
 
 
 class _CrashTask:
-    """Kills the worker process via os._exit, causing BrokenProcessPool in parent."""
+    """Kills the worker process via os._exit, causing a non-zero exit in parent."""
     def set_hps(self, hps: dict) -> None:
         pass
 
@@ -118,16 +119,6 @@ class _OutputVarNamesTask:
         pass
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def make_task() -> MagicMock:
-    task = MagicMock()
-    task.execute.return_value = {'score': 0.9}
-    return task
-
-
 def _agent(**kwargs: object) -> SearchAgent:
     task = kwargs.pop('task', MagicMock(spec=['set_hps', 'execute', 'finalize']))
     defaults: dict = dict(task=task, hps=None, num_trials=None, cuda_ids=None)
@@ -139,11 +130,6 @@ def _agent(**kwargs: object) -> SearchAgent:
 # Initialization — cuda_ids validation
 # ---------------------------------------------------------------------------
 
-def test_cuda_ids_as_int_raises() -> None:
-    with pytest.raises(TypeError, match='must be a list'):
-        SearchAgent(task=MagicMock(), cuda_ids=0)
-
-
 def test_cuda_ids_as_list_is_accepted() -> None:
     agent = SearchAgent(task=MagicMock(), cuda_ids=[0, 1])
     assert agent._cuda_ids == [0, 1]
@@ -154,19 +140,23 @@ def test_cuda_ids_none_is_accepted() -> None:
     assert agent._cuda_ids is None
 
 
-def test_cuda_ids_empty_list_raises() -> None:
-    with pytest.raises(ValueError, match='must not be an empty list'):
-        SearchAgent(task=MagicMock(), cuda_ids=[])
-
-
-def test_cuda_ids_negative_value_raises() -> None:
-    with pytest.raises(ValueError, match='non-negative integers'):
-        SearchAgent(task=MagicMock(), cuda_ids=[-1, 0])
-
-
-def test_cuda_ids_non_int_value_raises() -> None:
-    with pytest.raises(TypeError, match='non-negative integers'):
-        SearchAgent(task=MagicMock(), cuda_ids=[0, '1'])  # type: ignore[list-item]
+@pytest.mark.parametrize(
+    ('cuda_ids', 'error_type', 'message'),
+    [
+        (0, TypeError, 'must be a list'),
+        ([], ValueError, 'must not be an empty list'),
+        ([-1, 0], ValueError, 'non-negative integers'),
+        ([0, '1'], TypeError, 'non-negative integers'),
+        ((0, 1), TypeError, 'must be a list'),
+    ],
+)
+def test_cuda_ids_invalid_values_raise(
+    cuda_ids: object,
+    error_type: type[Exception],
+    message: str,
+) -> None:
+    with pytest.raises(error_type, match=message):
+        SearchAgent(task=MagicMock(), cuda_ids=cuda_ids)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -184,14 +174,21 @@ def test_json_dump_valid_path_accepted(tmp_path: object) -> None:
     assert agent._json_dump.suffix == '.json'
 
 
-def test_json_dump_non_json_suffix_raises(tmp_path: object) -> None:
-    with pytest.raises(ValueError, match='.json'):
-        SearchAgent(task=MagicMock(), json_dump=str(tmp_path / 'result.txt'))
-
-
-def test_json_dump_nonexistent_parent_raises() -> None:
-    with pytest.raises(ValueError, match='does not exist'):
-        SearchAgent(task=MagicMock(), json_dump='/nonexistent_dir/result.json')
+@pytest.mark.parametrize(
+    ('json_dump', 'message'),
+    [
+        ('result.txt', '.json'),
+        ('/nonexistent_dir/result.json', 'does not exist'),
+    ],
+)
+def test_json_dump_invalid_values_raise(
+    tmp_path: object,
+    json_dump: str,
+    message: str,
+) -> None:
+    path = json_dump if json_dump.startswith('/') else str(tmp_path / json_dump)
+    with pytest.raises(ValueError, match=message):
+        SearchAgent(task=MagicMock(), json_dump=path)
 
 
 # ---------------------------------------------------------------------------
@@ -221,24 +218,21 @@ def test_all_combinations_count() -> None:
     assert len(result) == 6
 
 
-def test_all_combinations_empty_candidate_list_raises() -> None:
-    with pytest.raises(ValueError, match='non-empty list'):
-        SearchAgent(task=MagicMock(), hps={'lr': []})
-
-
-def test_all_combinations_string_candidate_container_raises() -> None:
-    with pytest.raises(TypeError, match='non-empty list'):
-        SearchAgent(task=MagicMock(), hps={'lr': '0.1,0.01'})  # type: ignore[arg-type]
-
-
-def test_all_combinations_scalar_candidate_container_raises() -> None:
-    with pytest.raises(TypeError, match='non-empty list'):
-        SearchAgent(task=MagicMock(), hps={'lr': 0.1})  # type: ignore[arg-type]
-
-
-def test_all_combinations_tuple_candidate_container_raises() -> None:
-    with pytest.raises(TypeError, match='non-empty list'):
-        SearchAgent(task=MagicMock(), hps={'lr': (0.1, 0.01)})  # type: ignore[arg-type]
+@pytest.mark.parametrize(
+    ('hps', 'error_type'),
+    [
+        ({'lr': []}, ValueError),
+        ({'lr': '0.1,0.01'}, TypeError),
+        ({'lr': 0.1}, TypeError),
+        ({'lr': (0.1, 0.01)}, TypeError),
+    ],
+)
+def test_all_combinations_invalid_candidate_containers_raise(
+    hps: dict[str, object],
+    error_type: type[Exception],
+) -> None:
+    with pytest.raises(error_type, match='non-empty list'):
+        SearchAgent(task=MagicMock(), hps=hps)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -328,39 +322,43 @@ def test_execute_task_finalize_failure_does_not_propagate() -> None:
 # finalize — sorting
 # ---------------------------------------------------------------------------
 
-def test_finalize_sorts_history_by_job_id() -> None:
+@pytest.mark.parametrize(
+    ('history', 'expected'),
+    [
+        (
+            [
+                {'job_id': 2, 'trial_id': None},
+                {'job_id': 0, 'trial_id': None},
+                {'job_id': 1, 'trial_id': None},
+            ],
+            [(0, None), (1, None), (2, None)],
+        ),
+        (
+            [
+                {'job_id': 0, 'trial_id': 2},
+                {'job_id': 0, 'trial_id': 0},
+                {'job_id': 0, 'trial_id': 1},
+            ],
+            [(0, 0), (0, 1), (0, 2)],
+        ),
+        (
+            [
+                {'job_id': 1, 'trial_id': 0},
+                {'job_id': 0, 'trial_id': 1},
+                {'job_id': 0, 'trial_id': 0},
+            ],
+            [(0, 0), (0, 1), (1, 0)],
+        ),
+    ],
+)
+def test_finalize_sorts_history(
+    history: list[dict[str, int | None]],
+    expected: list[tuple[int, int | None]],
+) -> None:
     agent = _agent()
-    agent._history = [
-        {'job_id': 2, 'trial_id': None},
-        {'job_id': 0, 'trial_id': None},
-        {'job_id': 1, 'trial_id': None},
-    ]
+    agent._history = history
     agent.finalize()
-    assert [r['job_id'] for r in agent._history] == [0, 1, 2]
-
-
-def test_finalize_sorts_by_trial_id_within_same_job() -> None:
-    agent = _agent()
-    agent._history = [
-        {'job_id': 0, 'trial_id': 2},
-        {'job_id': 0, 'trial_id': 0},
-        {'job_id': 0, 'trial_id': 1},
-    ]
-    agent.finalize()
-    assert [r['trial_id'] for r in agent._history] == [0, 1, 2]
-
-
-def test_finalize_sorts_job_id_before_trial_id() -> None:
-    agent = _agent()
-    agent._history = [
-        {'job_id': 1, 'trial_id': 0},
-        {'job_id': 0, 'trial_id': 1},
-        {'job_id': 0, 'trial_id': 0},
-    ]
-    agent.finalize()
-    assert [(r['job_id'], r['trial_id']) for r in agent._history] == [
-        (0, 0), (0, 1), (1, 0)
-    ]
+    assert [(r['job_id'], r['trial_id']) for r in agent._history] == expected
 
 
 # ---------------------------------------------------------------------------
@@ -400,14 +398,19 @@ def test_finalize_json_is_valid_and_indented(tmp_path: object) -> None:
 # GridSearchAgent
 # ---------------------------------------------------------------------------
 
-def test_grid_search_agent_exhausts_all_combinations() -> None:
-    agent = GridSearchAgent(task=MagicMock(), hps={'a': [1, 2], 'b': [10, 20]})
-    assert len(agent._hps) == 4
-
-
-def test_grid_search_agent_single_param() -> None:
-    agent = GridSearchAgent(task=MagicMock(), hps={'lr': [1e-3, 1e-4, 1e-5]})
-    assert len(agent._hps) == 3
+@pytest.mark.parametrize(
+    ('hps', 'expected_len'),
+    [
+        ({'a': [1, 2], 'b': [10, 20]}, 4),
+        ({'lr': [1e-3, 1e-4, 1e-5]}, 3),
+    ],
+)
+def test_grid_search_agent_counts_combinations(
+    hps: dict[str, list[object]],
+    expected_len: int,
+) -> None:
+    agent = GridSearchAgent(task=MagicMock(), hps=hps)
+    assert len(agent._hps) == expected_len
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +440,47 @@ def test_random_search_agent_different_seeds_produce_different_samples() -> None
     hps0 = RandomSearchAgent(seed=0, **kwargs)._hps
     hps1 = RandomSearchAgent(seed=1, **kwargs)._hps
     assert hps0 != hps1
+
+
+@pytest.mark.parametrize('replace', [False, True])
+def test_random_search_agent_matches_materialized_sampling(
+    replace: bool,
+) -> None:
+    hps = {'a': [1, 2, 3], 'b': [10, 20]}
+    combinations = _agent().all_combinations(hps)
+    rng = random.Random(42)
+    if replace:
+        expected = [dict(rng.choice(combinations)) for _ in range(5)]
+    else:
+        expected = [dict(combo) for combo in rng.sample(combinations, k=5)]
+
+    agent = RandomSearchAgent(
+        num_iter=5,
+        seed=42,
+        replace=replace,
+        task=MagicMock(),
+        hps=hps,
+    )
+    assert agent._hps == expected
+
+
+@pytest.mark.parametrize('replace', [False, True])
+def test_random_search_agent_does_not_call_search_agent_all_combinations(
+    monkeypatch: pytest.MonkeyPatch,
+    replace: bool,
+) -> None:
+    def _raise(*args: object, **kwargs: object) -> list[dict[str, object]]:
+        raise AssertionError('SearchAgent.all_combinations should not be used')
+
+    monkeypatch.setattr(SearchAgent, 'all_combinations', _raise)
+    agent = RandomSearchAgent(
+        num_iter=3,
+        seed=0,
+        replace=replace,
+        task=MagicMock(),
+        hps={'a': list(range(100)), 'b': list(range(100))},
+    )
+    assert len(agent._hps) == 3
 
 
 def test_random_search_agent_none_hps_returns_single_empty_dict() -> None:
@@ -491,25 +535,23 @@ def test_random_search_agent_each_sample_uses_valid_values() -> None:
         assert combo['bs'] in valid['bs']
 
 
-def test_random_search_agent_num_iter_zero_raises() -> None:
-    with pytest.raises(ValueError, match='positive integer'):
-        RandomSearchAgent(num_iter=0, seed=0, task=MagicMock(), hps={'a': [1]})
-
-
-def test_random_search_agent_num_iter_non_int_raises() -> None:
-    with pytest.raises(TypeError, match='positive integer'):
-        RandomSearchAgent(num_iter=1.5, seed=0, task=MagicMock(), hps={'a': [1]})  # type: ignore[arg-type]
-
-
-def test_random_search_agent_replace_non_bool_raises() -> None:
-    with pytest.raises(TypeError, match='replace must be a bool'):
-        RandomSearchAgent(
-            num_iter=1,
-            seed=0,
-            replace='no',  # type: ignore[arg-type]
-            task=MagicMock(),
-            hps={'a': [1]},
-        )
+@pytest.mark.parametrize(
+    ('kwargs', 'error_type', 'message'),
+    [
+        ({'num_iter': 0}, ValueError, 'positive integer'),
+        ({'num_iter': 1.5}, TypeError, 'positive integer'),
+        ({'replace': 'no'}, TypeError, 'replace must be a bool'),
+    ],
+)
+def test_random_search_agent_invalid_init_args_raise(
+    kwargs: dict[str, object],
+    error_type: type[Exception],
+    message: str,
+) -> None:
+    base_kwargs = dict(num_iter=1, seed=0, replace=False, task=MagicMock(), hps={'a': [1]})
+    base_kwargs.update(kwargs)
+    with pytest.raises(error_type, match=message):
+        RandomSearchAgent(**base_kwargs)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -594,12 +636,7 @@ def test_execute_without_cuda_ids_does_not_create_process_pool() -> None:
             pass
 
     agent = SearchAgent(task=_LocalTask(), hps={'a': [3]})
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            'storegate.agent.search_agent.concurrent.futures.ProcessPoolExecutor',
-            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('must not be called')),
-        )
-        agent.execute()
+    agent.execute()
 
     assert agent._history[0]['result'] == {'score': 3}
 
@@ -640,72 +677,34 @@ def test_suffix_job_id_default_is_true() -> None:
     assert agent._suffix_job_id is True
 
 
-def test_suffix_job_id_appends_to_string_output_var_names() -> None:
+@pytest.mark.parametrize(
+    ('output_var_names', 'hps', 'expected'),
+    [
+        ('pred', None, ['pred_job0']),
+        (['pred', 'score'], None, [['pred_job0', 'score_job0']]),
+        (
+            {'train': None, 'valid': ['val_pred'], 'test': 'pred'},
+            None,
+            [{'train': None, 'valid': ['val_pred_job0'], 'test': 'pred_job0'}],
+        ),
+        ('pred', {'a': [1, 2]}, ['pred_job0', 'pred_job1']),
+        ('pred', {'output_var_names': ['custom']}, ['custom_job0']),
+        ('pred', {'output_var_names': [['custom', 'score']]}, [['custom_job0', 'score_job0']]),
+    ],
+)
+def test_suffix_job_id_updates_output_var_names(
+    output_var_names: object,
+    hps: dict[str, list[object]] | None,
+    expected: list[object],
+) -> None:
     agent = SearchAgent(
-        task=_OutputVarNamesTask('pred'),
-        hps=None,
-        suffix_job_id=True,
-    )
-    agent.execute()
-    assert agent._history[0]['result']['output_var_names'] == 'pred_job0'
-
-
-def test_suffix_job_id_appends_to_list_output_var_names() -> None:
-    agent = SearchAgent(
-        task=_OutputVarNamesTask(['pred', 'score']),
-        hps=None,
-        suffix_job_id=True,
-    )
-    agent.execute()
-    assert agent._history[0]['result']['output_var_names'] == ['pred_job0', 'score_job0']
-
-
-def test_suffix_job_id_appends_to_phase_dict_output_var_names() -> None:
-    agent = SearchAgent(
-        task=_OutputVarNamesTask({'train': None, 'valid': ['val_pred'], 'test': 'pred'}),
-        hps=None,
-        suffix_job_id=True,
-    )
-    agent.execute()
-    assert agent._history[0]['result']['output_var_names'] == {
-        'train': None,
-        'valid': ['val_pred_job0'],
-        'test': 'pred_job0',
-    }
-
-
-def test_suffix_job_id_uses_job_id_for_each_job() -> None:
-    agent = SearchAgent(
-        task=_OutputVarNamesTask('pred'),
-        hps={'a': [1, 2]},
+        task=_OutputVarNamesTask(output_var_names),
+        hps=hps,
         suffix_job_id=True,
     )
     agent.execute()
     agent.finalize()
-    assert [r['result']['output_var_names'] for r in agent._history] == [
-        'pred_job0',
-        'pred_job1',
-    ]
-
-
-def test_suffix_job_id_suffixes_explicit_hps_string_output_var_names() -> None:
-    agent = SearchAgent(
-        task=_OutputVarNamesTask('pred'),
-        hps={'output_var_names': ['custom']},
-        suffix_job_id=True,
-    )
-    agent.execute()
-    assert agent._history[0]['result']['output_var_names'] == 'custom_job0'
-
-
-def test_suffix_job_id_suffixes_explicit_hps_list_output_var_names() -> None:
-    agent = SearchAgent(
-        task=_OutputVarNamesTask('pred'),
-        hps={'output_var_names': [['custom', 'score']]},
-        suffix_job_id=True,
-    )
-    agent.execute()
-    assert agent._history[0]['result']['output_var_names'] == ['custom_job0', 'score_job0']
+    assert [r['result']['output_var_names'] for r in agent._history] == expected
 
 
 def test_execute_then_finalize_writes_json(tmp_path) -> None:
@@ -743,14 +742,16 @@ def test_execute_multiple_calls_reset_history() -> None:
 # job_timeout — initialization
 # ---------------------------------------------------------------------------
 
-def test_job_timeout_default_is_none() -> None:
-    agent = _agent()
-    assert agent._job_timeout is None
-
-
-def test_job_timeout_stored_correctly() -> None:
-    agent = SearchAgent(task=MagicMock(), job_timeout=5.0)
-    assert agent._job_timeout == 5.0
+@pytest.mark.parametrize(
+    ('job_timeout', 'expected'),
+    [
+        (None, None),
+        (5.0, 5.0),
+    ],
+)
+def test_job_timeout_is_stored(job_timeout: float | None, expected: float | None) -> None:
+    agent = SearchAgent(task=MagicMock(), job_timeout=job_timeout)
+    assert agent._job_timeout == expected
 
 
 # ---------------------------------------------------------------------------
@@ -806,24 +807,25 @@ def test_job_timeout_none_does_not_interfere_with_fast_jobs() -> None:
 # _suffix_output_var_names — direct unit tests (no subprocess)
 # ---------------------------------------------------------------------------
 
-def test_suffix_output_var_names_none_returns_none() -> None:
-    assert SearchAgent._suffix_output_var_names(None, 0) is None
-
-
-def test_suffix_output_var_names_str() -> None:
-    assert SearchAgent._suffix_output_var_names('pred', 3) == 'pred_job3'
-
-
-def test_suffix_output_var_names_list() -> None:
-    result = SearchAgent._suffix_output_var_names(['a', 'b'], 1)
-    assert result == ['a_job1', 'b_job1']
-
-
-def test_suffix_output_var_names_dict_with_mixed_values() -> None:
-    result = SearchAgent._suffix_output_var_names(
-        {'train': None, 'valid': ['v'], 'test': 'pred'}, 2
-    )
-    assert result == {'train': None, 'valid': ['v_job2'], 'test': 'pred_job2'}
+@pytest.mark.parametrize(
+    ('output_var_names', 'job_id', 'expected'),
+    [
+        (None, 0, None),
+        ('pred', 3, 'pred_job3'),
+        (['a', 'b'], 1, ['a_job1', 'b_job1']),
+        (
+            {'train': None, 'valid': ['v'], 'test': 'pred'},
+            2,
+            {'train': None, 'valid': ['v_job2'], 'test': 'pred_job2'},
+        ),
+    ],
+)
+def test_suffix_output_var_names_supported_values(
+    output_var_names: object,
+    job_id: int,
+    expected: object,
+) -> None:
+    assert SearchAgent._suffix_output_var_names(output_var_names, job_id) == expected
 
 
 def test_suffix_output_var_names_unsupported_type_raises() -> None:
@@ -835,47 +837,29 @@ def test_suffix_output_var_names_unsupported_type_raises() -> None:
 # execute_task with suffix_job_id — direct unit tests (no subprocess)
 # ---------------------------------------------------------------------------
 
-def test_execute_task_suffix_job_id_injects_suffixed_var_names() -> None:
+@pytest.mark.parametrize(
+    ('hps', 'job_id', 'expected'),
+    [
+        ({}, 5, 'pred_job5'),
+        ({'output_var_names': 'custom'}, 0, 'custom_job0'),
+        ({'output_var_names': ['custom', 'score']}, 2, ['custom_job2', 'score_job2']),
+    ],
+)
+def test_execute_task_suffix_job_id_applies_expected_value(
+    hps: dict[str, object],
+    job_id: int,
+    expected: object,
+) -> None:
     task = MagicMock()
     task._output_var_names = 'pred'
     task.execute.return_value = {}
     agent = SearchAgent(task=task, suffix_job_id=True)
 
-    result = agent.execute_task(task, hps={}, job_id=5)
+    result = agent.execute_task(task, hps=hps, job_id=job_id)
 
     passed_hps = task.set_hps.call_args[0][0]
-    assert passed_hps['output_var_names'] == 'pred_job5'
-    assert result['hps']['output_var_names'] == 'pred_job5'
-
-
-def test_execute_task_suffix_job_id_uses_hps_override() -> None:
-    task = MagicMock()
-    task._output_var_names = 'pred'
-    task.execute.return_value = {}
-    agent = SearchAgent(task=task, suffix_job_id=True)
-
-    result = agent.execute_task(task, hps={'output_var_names': 'custom'}, job_id=0)
-
-    passed_hps = task.set_hps.call_args[0][0]
-    assert passed_hps['output_var_names'] == 'custom_job0'
-    assert result['hps']['output_var_names'] == 'custom_job0'
-
-
-def test_execute_task_suffix_job_id_records_list_override_in_result_hps() -> None:
-    task = MagicMock()
-    task._output_var_names = 'pred'
-    task.execute.return_value = {}
-    agent = SearchAgent(task=task, suffix_job_id=True)
-
-    result = agent.execute_task(
-        task,
-        hps={'output_var_names': ['custom', 'score']},
-        job_id=2,
-    )
-
-    passed_hps = task.set_hps.call_args[0][0]
-    assert passed_hps['output_var_names'] == ['custom_job2', 'score_job2']
-    assert result['hps']['output_var_names'] == ['custom_job2', 'score_job2']
+    assert passed_hps['output_var_names'] == expected
+    assert result['hps']['output_var_names'] == expected
 
 
 def test_execute_task_suffix_job_id_false_does_not_modify() -> None:
@@ -903,56 +887,55 @@ def test_execute_task_suffix_job_id_no_attr_skips() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _terminate_executor_processes — lines 23-33
+# _shutdown_running_jobs
 # ---------------------------------------------------------------------------
 
-def test_terminate_executor_processes_terminates_alive_and_skips_dead() -> None:
+def test_shutdown_running_jobs_terminates_alive_and_skips_dead() -> None:
     """Alive processes are terminated; already-dead ones are skipped."""
     proc_alive = MagicMock()
     proc_alive.is_alive.side_effect = [True, False]  # alive → terminate, dead after join
+    pipe_alive = MagicMock()
 
     proc_dead = MagicMock()
     proc_dead.is_alive.return_value = False
+    pipe_dead = MagicMock()
 
-    executor = MagicMock()
-    executor._processes = {0: proc_alive, 1: proc_dead}
+    jobs = {
+        1: _RunningJob(proc_alive, pipe_alive, {}, 0, None),
+        2: _RunningJob(proc_dead, pipe_dead, {}, 1, None),
+    }
 
-    _terminate_executor_processes(executor)
+    _shutdown_running_jobs(jobs)
 
+    pipe_alive.close.assert_called_once()
+    pipe_dead.close.assert_called_once()
     proc_alive.terminate.assert_called_once()
     proc_dead.terminate.assert_not_called()
     proc_alive.join.assert_called_once()
     proc_alive.kill.assert_not_called()
+    proc_alive.close.assert_called_once()
+    proc_dead.close.assert_called_once()
 
 
-def test_terminate_executor_processes_kills_stubborn_process() -> None:
+def test_shutdown_running_jobs_kills_stubborn_process() -> None:
     """Processes that survive terminate() are forcefully killed."""
     proc = MagicMock()
     proc.is_alive.side_effect = [True, True]  # alive → terminate, still alive after join → kill
+    pipe = MagicMock()
 
-    executor = MagicMock()
-    executor._processes = {0: proc}
+    jobs = {1: _RunningJob(proc, pipe, {}, 0, None)}
 
-    _terminate_executor_processes(executor, kill_after=0.01)
+    _shutdown_running_jobs(jobs, kill_after=0.01)
 
+    pipe.close.assert_called_once()
     proc.terminate.assert_called_once()
     proc.kill.assert_called_once()
     assert proc.join.call_count == 2
+    proc.close.assert_called_once()
 
 
-def test_terminate_executor_processes_no_processes_attr() -> None:
-    """Gracefully handles executor without _processes attribute."""
-    executor = MagicMock(spec=[])  # no _processes attribute
-    _terminate_executor_processes(executor)  # should not raise
-
-
-# ---------------------------------------------------------------------------
-# cuda_ids — non-list, non-int type (line 78)
-# ---------------------------------------------------------------------------
-
-def test_cuda_ids_tuple_raises_type_error() -> None:
-    with pytest.raises(TypeError, match='must be a list'):
-        SearchAgent(task=MagicMock(), cuda_ids=(0, 1))
+def test_shutdown_running_jobs_empty_dict() -> None:
+    _shutdown_running_jobs({})  # should not raise
 
 
 # ---------------------------------------------------------------------------
@@ -1012,7 +995,7 @@ def test_pool_timeout_cancels_pending_and_remaining_jobs() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pool worker crash — future.result() raises (lines 338-347)
+# Pool worker crash — worker exits without a result
 # ---------------------------------------------------------------------------
 
 def test_pool_worker_crash_records_error() -> None:
@@ -1026,35 +1009,4 @@ def test_pool_worker_crash_records_error() -> None:
 
     assert len(agent._history) == 1
     assert 'error' in agent._history[0]
-
-
-def test_pool_unknown_future_in_done_uses_fallback() -> None:
-    """When a done future is not found in future_to_arg, fallback values are used."""
-    import concurrent.futures
-
-    agent = SearchAgent(task=_SumTask(), hps=None, cuda_ids=[0])
-
-    # Patch concurrent.futures.wait to inject an unknown future into 'done'
-    original_wait = concurrent.futures.wait
-
-    unknown_future: concurrent.futures.Future[dict] = concurrent.futures.Future()
-    unknown_future.set_exception(RuntimeError('ghost future'))
-    injected = False
-
-    def patched_wait(fs, **kwargs):
-        nonlocal injected
-        done, pending = original_wait(fs, **kwargs)
-        if not injected and done:
-            injected = True
-            done.add(unknown_future)
-        return done, pending
-
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr('concurrent.futures.wait', patched_wait)
-        agent.execute()
-
-    fallback_entries = [e for e in agent._history if e.get('job_id') == -1]
-    assert len(fallback_entries) == 1
-    assert fallback_entries[0]['hps'] == {}
-    assert fallback_entries[0]['trial_id'] is None
-    assert 'RuntimeError' in fallback_entries[0]['error']
+    assert 'exit code' in agent._history[0]['error']

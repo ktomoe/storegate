@@ -46,6 +46,24 @@ class PytorchTask(DLTask):
         if self._metrics is None:
             self._metrics = ['loss']
 
+    def _phase_var_names(self, attr_name: str, phase: str) -> list[str] | None:
+        return self._get_var_names_for_phase(
+            cast(_CompiledVarNames, getattr(self, attr_name)),
+            phase,
+        )
+
+    def _clear_existing_test_outputs(self, output_var_names: list[str] | None) -> None:
+        if output_var_names is None:
+            return
+        existing_var_names = set(self._storegate.get_var_names('test'))
+        deleted = False
+        for var_name in output_var_names:
+            if var_name in existing_var_names:
+                self._storegate.delete_data(var_name, 'test')
+                deleted = True
+        if deleted:
+            self._storegate.compile()
+
     def compile(self) -> None:
         """Compile pytorch ml objects."""
         self.compile_device()
@@ -104,80 +122,48 @@ class PytorchTask(DLTask):
 
     def get_dataloader(self, phase: str) -> DataLoader:  # type: ignore[type-arg]
         """Return dataloader."""
-        dataset_kwargs: dict[str, Any] = {}
-        if self._dataset_args is not None:
-            dataset_kwargs.update(self._dataset_args)
-
+        dataset_kwargs = dict(self._dataset_args or {})
         dataset = StoreGateDataset(self._storegate,
                                    phase,
-                                   input_var_names=self._get_var_names_for_phase(cast(_CompiledVarNames, self._input_var_names), phase),
-                                   true_var_names=self._get_var_names_for_phase(cast(_CompiledVarNames, self._true_var_names), phase),
+                                   input_var_names=self._phase_var_names('_input_var_names', phase),
+                                   true_var_names=self._phase_var_names('_true_var_names', phase),
                                    **dataset_kwargs)
 
-        dataloader_args: dict[str, Any] = dict(dataset=dataset)
-
-        if self._dataloader_args is not None:
-            dataloader_args.update(self._dataloader_args)
+        dataloader_args: dict[str, Any] = {'dataset': dataset, **(self._dataloader_args or {})}
 
         # Prediction writes outputs back to StoreGate in dataloader order,
         # so the test phase must keep the original sample order.
-        if phase == 'test':
-            dataloader_args['shuffle'] = False
-        else:
-            dataloader_args.setdefault('shuffle', phase == 'train')
+        dataloader_args['shuffle'] = (
+            False if phase == 'test'
+            else dataloader_args.get('shuffle', phase == 'train')
+        )
 
         return DataLoader(batch_size=self._batch_size,
                           **dataloader_args)
 
     def _phase_has_supervised_data(self, phase: str) -> bool:
-        input_var_names = self._get_var_names_for_phase(
-            cast(_CompiledVarNames, self._input_var_names), phase
+        return bool(self._phase_var_names('_input_var_names', phase)) and bool(
+            self._phase_var_names('_true_var_names', phase)
         )
-        true_var_names = self._get_var_names_for_phase(
-            cast(_CompiledVarNames, self._true_var_names), phase
-        )
-        return bool(input_var_names) and bool(true_var_names)
 
     def fit(self) -> dict[str, Any]:
         """Train model over epoch."""
-        has_valid = self._phase_has_supervised_data('valid')
-
-        dataloaders: dict[str, DataLoader] = {'train': self.get_dataloader('train')}  # type: ignore[type-arg]
-        if has_valid:
-            dataloaders['valid'] = self.get_dataloader('valid')
-
-        rtn_history: dict[str, list[dict[str, Any]]] = {'train': []}
-        if has_valid:
-            rtn_history['valid'] = []
+        phases = ['train', *(['valid'] if self._phase_has_supervised_data('valid') else [])]
+        dataloaders: dict[str, DataLoader] = {phase: self.get_dataloader(phase) for phase in phases}  # type: ignore[type-arg]
+        rtn_history: dict[str, list[dict[str, Any]]] = {phase: [] for phase in phases}
 
         for epoch in range(1, self._num_epochs + 1):
-            # train
-            self._ml.model.train()
-            rtn_result = self.step_epoch(epoch, 'train', dataloaders['train'])
-            rtn_history['train'].append(rtn_result)
-
-            # valid
-            if has_valid:
-                self._ml.model.eval()
-                rtn_result = self.step_epoch(epoch, 'valid', dataloaders['valid'])
-                rtn_history['valid'].append(rtn_result)
+            for phase in phases:
+                (self._ml.model.train if phase == 'train' else self._ml.model.eval)()
+                rtn_history[phase].append(self.step_epoch(epoch, phase, dataloaders[phase]))
 
         return rtn_history
 
 
     def predict(self) -> dict[str, Any]:
         """Predict and upload outputs to storegate."""
-        deleted = False
-        output_var_names = self._get_var_names_for_phase(
-            cast(_CompiledVarNames, self._output_var_names), 'test'
-        )
-        if output_var_names is not None:
-            for var_name in output_var_names:
-                if var_name in self._storegate.get_var_names('test'):
-                    self._storegate.delete_data(var_name, 'test')
-                    deleted = True
-        if deleted:
-            self._storegate.compile()
+        output_var_names = self._phase_var_names('_output_var_names', 'test')
+        self._clear_existing_test_outputs(output_var_names)
 
         if not self._storegate.get_var_names('test'):
             logger.warn("predict() skipped: no variables found in the 'test' phase.")

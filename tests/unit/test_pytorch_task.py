@@ -85,6 +85,30 @@ def make_runtime_task(**overrides: Any) -> PytorchTask:
     return task
 
 
+def make_loop_task(
+    *,
+    input_var_names: Any = None,
+    true_var_names: Any = None,
+    output_var_names: Any = None,
+    storegate: Any = None,
+    num_epochs: int = 1,
+) -> PytorchTask:
+    """Return a minimal task instance for fit()/predict() tests."""
+    task = PytorchTask.__new__(PytorchTask)
+    task._storegate = MagicMock() if storegate is None else storegate
+    if input_var_names is not None:
+        task._input_var_names = compile_var_names(input_var_names)
+    if true_var_names is not None:
+        task._true_var_names = compile_var_names(true_var_names)
+    if output_var_names is not None:
+        task._output_var_names = compile_var_names(output_var_names)
+    task.get_dataloader = MagicMock()
+    task.step_epoch = MagicMock()
+    task._ml = DLEnv(model=MagicMock())
+    task._num_epochs = num_epochs
+    return task
+
+
 class _FakeTqdm:
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
@@ -244,90 +268,90 @@ def test_compile_loss_builds_and_moves_loss() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_get_dataloader_builds_train_loader_with_defaults() -> None:
+@pytest.mark.parametrize(
+    ('phase', 'dataset_args', 'dataloader_args', 'batch_size', 'expected_input', 'expected_true', 'expected_loader_kwargs'),
+    [
+        (
+            'train',
+            {'preload': False},
+            {'num_workers': 2},
+            16,
+            ['x_train'],
+            ['y_train'],
+            {'shuffle': True, 'num_workers': 2},
+        ),
+        (
+            'valid',
+            None,
+            None,
+            8,
+            ['x_valid'],
+            ['y_valid'],
+            {'shuffle': False},
+        ),
+        (
+            'test',
+            None,
+            None,
+            8,
+            ['x_test'],
+            None,
+            {'shuffle': False},
+        ),
+        (
+            'test',
+            None,
+            {'shuffle': True, 'num_workers': 2},
+            8,
+            ['x_test'],
+            None,
+            {'shuffle': False, 'num_workers': 2},
+        ),
+    ],
+)
+def test_get_dataloader_builds_loader_for_phase(
+    phase: str,
+    dataset_args: dict[str, Any] | None,
+    dataloader_args: dict[str, Any] | None,
+    batch_size: int,
+    expected_input: list[str],
+    expected_true: list[str] | None,
+    expected_loader_kwargs: dict[str, Any],
+) -> None:
     task = make_runtime_task(
+        batch_size=batch_size,
         input_var_names={'train': 'x_train', 'valid': 'x_valid', 'test': 'x_test'},
         true_var_names={'train': 'y_train', 'valid': 'y_valid', 'test': None},
-        dataset_args={'preload': False},
-        dataloader_args={'num_workers': 2},
-        batch_size=16,
+        dataset_args=dataset_args,
+        dataloader_args=dataloader_args,
     )
     fake_dataset = object()
 
     with patch('storegate.task.pytorch_task.StoreGateDataset', return_value=fake_dataset) as dataset_cls:
         with patch('storegate.task.pytorch_task.DataLoader', return_value='loader') as dataloader_cls:
-            loader = task.get_dataloader('train')
+            loader = task.get_dataloader(phase)
 
     assert loader == 'loader'
-    dataset_cls.assert_called_once_with(
-        task._storegate,
-        'train',
-        input_var_names=['x_train'],
-        true_var_names=['y_train'],
-        preload=False,
-    )
+    assert dataset_cls.call_args.args == (task._storegate, phase)
+    assert dataset_cls.call_args.kwargs['input_var_names'] == expected_input
+    assert dataset_cls.call_args.kwargs['true_var_names'] == expected_true
+    assert dataset_cls.call_args.kwargs.get('preload', True) is (dataset_args or {}).get('preload', True)
+
     kwargs = dataloader_cls.call_args.kwargs
     assert kwargs['dataset'] is fake_dataset
-    assert kwargs['batch_size'] == 16
-    assert kwargs['shuffle'] is True
-    assert kwargs['num_workers'] == 2
-
-
-def test_get_dataloader_defaults_shuffle_false_for_valid() -> None:
-    task = make_runtime_task(
-        batch_size=8,
-        input_var_names={'train': 'x_train', 'valid': 'x_valid', 'test': 'x_test'},
-        true_var_names={'train': 'y_train', 'valid': 'y_valid', 'test': None},
-    )
-
-    with patch('storegate.task.pytorch_task.StoreGateDataset', return_value='dataset') as dataset_cls:
-        with patch('storegate.task.pytorch_task.DataLoader', return_value='loader') as dataloader_cls:
-            task.get_dataloader('valid')
-
-    assert dataset_cls.call_args.kwargs['input_var_names'] == ['x_valid']
-    assert dataset_cls.call_args.kwargs['true_var_names'] == ['y_valid']
-    assert dataloader_cls.call_args.kwargs['shuffle'] is False
-
-
-def test_get_dataloader_uses_test_phase_var_names() -> None:
-    task = make_runtime_task(
-        input_var_names={'train': 'x_train', 'valid': 'x_valid', 'test': 'x_test'},
-        true_var_names={'train': 'y_train', 'valid': 'y_valid', 'test': None},
-    )
-
-    with patch('storegate.task.pytorch_task.StoreGateDataset', return_value='dataset') as dataset_cls:
-        with patch('storegate.task.pytorch_task.DataLoader', return_value='loader'):
-            task.get_dataloader('test')
-
-    assert dataset_cls.call_args.kwargs['input_var_names'] == ['x_test']
-    assert dataset_cls.call_args.kwargs['true_var_names'] is None
-
-
-def test_get_dataloader_forces_shuffle_false_for_test() -> None:
-    task = make_runtime_task(
-        input_var_names={'train': 'x_train', 'valid': 'x_valid', 'test': 'x_test'},
-        true_var_names={'train': 'y_train', 'valid': 'y_valid', 'test': None},
-        dataloader_args={'shuffle': True, 'num_workers': 2},
-    )
-
-    with patch('storegate.task.pytorch_task.StoreGateDataset', return_value='dataset'):
-        with patch('storegate.task.pytorch_task.DataLoader', return_value='loader') as dataloader_cls:
-            task.get_dataloader('test')
-
-    kwargs = dataloader_cls.call_args.kwargs
-    assert kwargs['shuffle'] is False
-    assert kwargs['num_workers'] == 2
+    assert kwargs['batch_size'] == batch_size
+    for key, value in expected_loader_kwargs.items():
+        assert kwargs[key] == value
 
 
 def test_fit_without_valid_returns_train_history_only() -> None:
-    task = PytorchTask.__new__(PytorchTask)
-    task._storegate = MagicMock()
-    task._input_var_names = compile_var_names({'train': 'x', 'valid': None, 'test': 'x_test'})
-    task._true_var_names = compile_var_names({'train': 'y', 'valid': None, 'test': None})
-    task.get_dataloader = MagicMock(return_value='train-loader')
-    task.step_epoch = MagicMock(side_effect=[{'loss': 0.1}, {'loss': 0.2}])
-    task._ml = DLEnv(model=MagicMock())
-    task._num_epochs = 2
+    task = make_loop_task(
+        input_var_names={'train': 'x', 'valid': None, 'test': 'x_test'},
+        true_var_names={'train': 'y', 'valid': None, 'test': None},
+        num_epochs=2,
+    )
+    task.get_dataloader.return_value = 'train-loader'
+    task.step_epoch.side_effect = [{'loss': 0.1}, {'loss': 0.2}]
 
     result = task.fit()
 
@@ -338,21 +362,18 @@ def test_fit_without_valid_returns_train_history_only() -> None:
 
 
 def test_fit_with_valid_runs_both_phases_each_epoch() -> None:
-    task = PytorchTask.__new__(PytorchTask)
-    task._storegate = MagicMock()
-    task._input_var_names = compile_var_names({'train': 'x_train', 'valid': 'x_valid', 'test': 'x_test'})
-    task._true_var_names = compile_var_names({'train': 'y_train', 'valid': 'y_valid', 'test': None})
-    task.get_dataloader = MagicMock(side_effect=['train-loader', 'valid-loader'])
-    task.step_epoch = MagicMock(
-        side_effect=[
-            {'train': 1},
-            {'valid': 1},
-            {'train': 2},
-            {'valid': 2},
-        ]
+    task = make_loop_task(
+        input_var_names={'train': 'x_train', 'valid': 'x_valid', 'test': 'x_test'},
+        true_var_names={'train': 'y_train', 'valid': 'y_valid', 'test': None},
+        num_epochs=2,
     )
-    task._ml = DLEnv(model=MagicMock())
-    task._num_epochs = 2
+    task.get_dataloader.side_effect = ['train-loader', 'valid-loader']
+    task.step_epoch.side_effect = [
+        {'train': 1},
+        {'valid': 1},
+        {'train': 2},
+        {'valid': 2},
+    ]
 
     result = task.fit()
 
@@ -371,14 +392,12 @@ def test_fit_with_valid_runs_both_phases_each_epoch() -> None:
 
 
 def test_fit_ignores_valid_phase_when_only_unrelated_storegate_vars_exist() -> None:
-    task = PytorchTask.__new__(PytorchTask)
-    task._storegate = MagicMock()
-    task._input_var_names = compile_var_names({'train': 'x', 'valid': None, 'test': 'x_test'})
-    task._true_var_names = compile_var_names({'train': 'y', 'valid': None, 'test': None})
-    task.get_dataloader = MagicMock(return_value='train-loader')
-    task.step_epoch = MagicMock(side_effect=[{'loss': 0.1}])
-    task._ml = DLEnv(model=MagicMock())
-    task._num_epochs = 1
+    task = make_loop_task(
+        input_var_names={'train': 'x', 'valid': None, 'test': 'x_test'},
+        true_var_names={'train': 'y', 'valid': None, 'test': None},
+    )
+    task.get_dataloader.return_value = 'train-loader'
+    task.step_epoch.side_effect = [{'loss': 0.1}]
 
     result = task.fit()
 
@@ -388,13 +407,8 @@ def test_fit_ignores_valid_phase_when_only_unrelated_storegate_vars_exist() -> N
 
 
 def test_predict_skips_when_test_phase_empty() -> None:
-    task = PytorchTask.__new__(PytorchTask)
-    task._output_var_names = compile_var_names(['pred'])
-    task._storegate = MagicMock()
+    task = make_loop_task(output_var_names=['pred'])
     task._storegate.get_var_names.return_value = []
-    task._ml = DLEnv(model=MagicMock())
-    task.get_dataloader = MagicMock()
-    task.step_epoch = MagicMock()
 
     with patch('storegate.task.pytorch_task.logger.warn') as warn:
         result = task.predict()
@@ -406,13 +420,10 @@ def test_predict_skips_when_test_phase_empty() -> None:
 
 
 def test_predict_deletes_existing_outputs_before_running() -> None:
-    task = PytorchTask.__new__(PytorchTask)
-    task._output_var_names = compile_var_names({'train': ['ignored'], 'test': 'pred'})
-    task._storegate = MagicMock()
+    task = make_loop_task(output_var_names={'train': ['ignored'], 'test': 'pred'})
     task._storegate.get_var_names.side_effect = [['pred', 'x'], ['x']]
-    task._ml = DLEnv(model=MagicMock())
-    task.get_dataloader = MagicMock(return_value='test-loader')
-    task.step_epoch = MagicMock(return_value={'acc': 0.9})
+    task.get_dataloader.return_value = 'test-loader'
+    task.step_epoch.return_value = {'acc': 0.9}
 
     result = task.predict()
 
@@ -425,13 +436,10 @@ def test_predict_deletes_existing_outputs_before_running() -> None:
 
 
 def test_predict_recompiles_after_writing_new_outputs() -> None:
-    task = PytorchTask.__new__(PytorchTask)
-    task._output_var_names = compile_var_names({'test': 'pred'})
-    task._storegate = MagicMock()
+    task = make_loop_task(output_var_names={'test': 'pred'})
     task._storegate.get_var_names.return_value = ['x']
-    task._ml = DLEnv(model=MagicMock())
-    task.get_dataloader = MagicMock(return_value='test-loader')
-    task.step_epoch = MagicMock(return_value={'acc': 0.9})
+    task.get_dataloader.return_value = 'test-loader'
+    task.step_epoch.return_value = {'acc': 0.9}
 
     result = task.predict()
 
@@ -448,18 +456,15 @@ def test_predict_restores_storegate_compiled_state_after_writing_outputs(tmp_pat
     sg.add_data('x', np.arange(8, dtype=np.float32).reshape(4, 2), phase='test')
     sg.compile()
 
-    task = PytorchTask.__new__(PytorchTask)
-    task._output_var_names = compile_var_names({'test': 'pred'})
-    task._storegate = sg
-    task._ml = DLEnv(model=MagicMock())
-    task.get_dataloader = MagicMock(return_value='test-loader')
+    task = make_loop_task(output_var_names={'test': 'pred'}, storegate=sg)
+    task.get_dataloader.return_value = 'test-loader'
 
     def write_predictions(epoch: int, phase: str, dataloader: object) -> dict[str, float]:
         assert (epoch, phase, dataloader) == (0, 'test', 'test-loader')
         sg.add_data('pred', np.ones((4, 1), dtype=np.float32), phase='test')
         return {'acc': 1.0}
 
-    task.step_epoch = MagicMock(side_effect=write_predictions)
+    task.step_epoch.side_effect = write_predictions
 
     result = task.predict()
 
@@ -539,7 +544,7 @@ def test_step_epoch_writes_test_outputs_and_updates_progress() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _output_to_storegate — output_var_names is None
+# _output_to_storegate
 # ---------------------------------------------------------------------------
 
 
@@ -549,74 +554,43 @@ def test_output_to_storegate_none_var_names_is_noop():
     task._storegate.add_data.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# _output_to_storegate — single output
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ('output_var_names', 'payload', 'expected_names'),
+    [
+        ({'train': ['train_pred'], 'test': 'pred'}, make_tensor(1.0), ['pred']),
+        (['out'], make_tensor(2.0), ['out']),
+        (['x', 'y'], [make_tensor(1.0), make_tensor(2.0)], ['x', 'y']),
+    ],
+)
+def test_output_to_storegate_writes_expected_names(
+    output_var_names: Any,
+    payload: torch.Tensor | list[torch.Tensor],
+    expected_names: list[str],
+) -> None:
+    task = make_task(output_var_names=output_var_names)
+    task._output_to_storegate(payload)
+
+    names_written = [call_.args[0] for call_ in task._storegate.add_data.call_args_list]
+    assert names_written == expected_names
+    assert all(call_.args[2] == 'test' for call_ in task._storegate.add_data.call_args_list)
 
 
-def test_output_to_storegate_single_tensor_calls_add_data():
-    task = make_task(output_var_names={'train': ['train_pred'], 'test': 'pred'})
-    t = make_tensor(1.0)
-    task._output_to_storegate(t)
-    task._storegate.add_data.assert_called_once()
-    args = task._storegate.add_data.call_args
-    assert args[0][0] == 'pred'
-    assert args[0][2] == 'test'
-
-
-def test_output_to_storegate_single_tensor_wrapped_in_list():
-    """A bare Tensor (not list) must be wrapped before zip."""
-    task = make_task(output_var_names=['out'])
-    task._output_to_storegate(make_tensor(2.0))
-    assert task._storegate.add_data.call_count == 1
-
-
-# ---------------------------------------------------------------------------
-# _output_to_storegate — multiple outputs
-# ---------------------------------------------------------------------------
-
-
-def test_output_to_storegate_list_calls_add_data_for_each():
-    task = make_task(output_var_names=['a', 'b'])
-    task._output_to_storegate([make_tensor(1.0), make_tensor(2.0)])
-    assert task._storegate.add_data.call_count == 2
-
-
-def test_output_to_storegate_list_maps_names_to_outputs():
-    task = make_task(output_var_names=['x', 'y'])
-    task._output_to_storegate([make_tensor(1.0), make_tensor(2.0)])
-    names_written = [c[0][0] for c in task._storegate.add_data.call_args_list]
-    assert names_written == ['x', 'y']
-
-
-# ---------------------------------------------------------------------------
-# _output_to_storegate — length mismatch raises ValueError
-# ---------------------------------------------------------------------------
-
-
-def test_output_to_storegate_more_outputs_than_var_names_raises():
-    task = make_task(output_var_names=['only_one'])
-    with pytest.raises(ValueError, match='output_var_names'):
-        task._output_to_storegate([make_tensor(1.0), make_tensor(2.0)])
-
-
-def test_output_to_storegate_fewer_outputs_than_var_names_raises():
-    task = make_task(output_var_names=['a', 'b', 'c'])
-    with pytest.raises(ValueError, match='output_var_names'):
-        task._output_to_storegate([make_tensor(1.0)])
-
-
-def test_output_to_storegate_mismatch_error_contains_counts():
-    task = make_task(output_var_names=['a', 'b'])
-    with pytest.raises(ValueError, match=r'1.*2|2.*1'):
-        task._output_to_storegate([make_tensor(1.0)])
-
-
-def test_output_to_storegate_mismatch_does_not_write_partial_data():
-    """No add_data calls must occur when lengths mismatch."""
-    task = make_task(output_var_names=['a', 'b'])
-    with pytest.raises(ValueError):
-        task._output_to_storegate([make_tensor(1.0)])
+@pytest.mark.parametrize(
+    ('output_var_names', 'payload', 'message'),
+    [
+        (['only_one'], [make_tensor(1.0), make_tensor(2.0)], 'output_var_names'),
+        (['a', 'b', 'c'], [make_tensor(1.0)], 'output_var_names'),
+        (['a', 'b'], [make_tensor(1.0)], r'1.*2|2.*1'),
+    ],
+)
+def test_output_to_storegate_length_mismatch_raises_without_partial_writes(
+    output_var_names: list[str],
+    payload: list[torch.Tensor],
+    message: str,
+) -> None:
+    task = make_task(output_var_names=output_var_names)
+    with pytest.raises(ValueError, match=message):
+        task._output_to_storegate(payload)
     task._storegate.add_data.assert_not_called()
 
 
@@ -625,19 +599,14 @@ def test_output_to_storegate_mismatch_does_not_write_partial_data():
 # ---------------------------------------------------------------------------
 
 
-def test_build_module_string_with_none_modules_raises_value_error():
-    with pytest.raises(ValueError, match="'Linear'"):
+def test_build_module_string_with_none_modules_raises_actionable_error():
+    with pytest.raises(ValueError) as exc_info:
         build_module('Linear', {}, None)
 
-
-def test_build_module_string_with_none_modules_error_mentions_class():
-    with pytest.raises(ValueError, match='class'):
-        build_module('Linear', {}, None)
-
-
-def test_build_module_string_with_none_modules_error_mentions_torch():
-    with pytest.raises(ValueError, match='torch'):
-        build_module('Linear', {}, None)
+    message = str(exc_info.value)
+    assert "'Linear'" in message
+    assert 'class' in message
+    assert 'torch' in message
 
 
 def test_build_module_string_with_valid_modules_succeeds():
@@ -688,19 +657,16 @@ def test_build_module_instance_with_args_warns():
 from storegate.task.pytorch.pytorch_util import inputs_size  # noqa: E402
 
 
-def test_inputs_size_tensor():
-    t = torch.randn(8, 3)
-    assert inputs_size(t) == 8
-
-
-def test_inputs_size_list_of_tensors():
-    ts = [torch.randn(4, 3), torch.randn(4, 5)]
-    assert inputs_size(ts) == 4
-
-
-def test_inputs_size_tuple_of_tensors():
-    ts = (torch.randn(6, 2),)
-    assert inputs_size(ts) == 6
+@pytest.mark.parametrize(
+    ('inputs', 'expected'),
+    [
+        (torch.randn(8, 3), 8),
+        ([torch.randn(4, 3), torch.randn(4, 5)], 4),
+        ((torch.randn(6, 2),), 6),
+    ],
+)
+def test_inputs_size_tensor_like_inputs(inputs: Any, expected: int):
+    assert inputs_size(inputs) == expected
 
 
 def test_inputs_size_batch_size_attr():
@@ -733,40 +699,36 @@ def make_dl_task():
     return task
 
 
-def test_set_hps_model_empty_suffix_raises():
+@pytest.mark.parametrize(
+    ('params', 'message'),
+    [
+        ({'model__': 64}, 'model__'),
+        ({'optimizer__': 1e-3}, 'optimizer__'),
+        ({'loss__': 0.1}, 'loss__'),
+    ],
+)
+def test_set_hps_empty_suffix_raises(params: dict[str, Any], message: str):
     task = make_dl_task()
-    with pytest.raises(ValueError, match='model__'):
-        task.set_hps({'model__': 64})
+    with pytest.raises(ValueError, match=message):
+        task.set_hps(params)
 
 
-def test_set_hps_optimizer_empty_suffix_raises():
+@pytest.mark.parametrize(
+    ('params', 'target_attr', 'expected'),
+    [
+        ({'model__hidden': 128}, '_model_args', {'hidden': 128}),
+        ({'optimizer__lr': 1e-4}, '_optimizer_args', {'lr': 1e-4}),
+        ({'loss__weight': 0.5}, '_loss_args', {'weight': 0.5}),
+    ],
+)
+def test_set_hps_valid_suffix_sets_arg(
+    params: dict[str, Any],
+    target_attr: str,
+    expected: dict[str, Any],
+):
     task = make_dl_task()
-    with pytest.raises(ValueError, match='optimizer__'):
-        task.set_hps({'optimizer__': 1e-3})
-
-
-def test_set_hps_loss_empty_suffix_raises():
-    task = make_dl_task()
-    with pytest.raises(ValueError, match='loss__'):
-        task.set_hps({'loss__': 0.1})
-
-
-def test_set_hps_model_valid_suffix_sets_arg():
-    task = make_dl_task()
-    task.set_hps({'model__hidden': 128})
-    assert task._model_args['hidden'] == 128
-
-
-def test_set_hps_optimizer_valid_suffix_sets_arg():
-    task = make_dl_task()
-    task.set_hps({'optimizer__lr': 1e-4})
-    assert task._optimizer_args['lr'] == 1e-4
-
-
-def test_set_hps_loss_valid_suffix_sets_arg():
-    task = make_dl_task()
-    task.set_hps({'loss__weight': 0.5})
-    assert task._loss_args['weight'] == 0.5
+    task.set_hps(params)
+    assert getattr(task, target_attr) == expected
 
 
 def test_step_batch_test_phase_without_labels_skips_loss():

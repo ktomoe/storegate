@@ -1,5 +1,6 @@
 """RandomSearchAgent module."""
 import random
+from math import prod
 from typing import Any
 
 from storegate.agent.search_agent import SearchAgent
@@ -54,18 +55,43 @@ class RandomSearchAgent(SearchAgent):
         self._replace = replace
         super().__init__(**kwargs)
 
+    @staticmethod
+    def _combination_from_index(
+        keys: list[str],
+        values: list[list[Any]],
+        index: int,
+    ) -> dict[str, Any]:
+        selected: list[Any] = [None] * len(values)
+        for ii in range(len(values) - 1, -1, -1):
+            index, offset = divmod(index, len(values[ii]))
+            selected[ii] = values[ii][offset]
+        return dict(zip(keys, selected))
+
     def all_combinations(self, hps: dict[str, list[Any]] | None) -> list[dict[str, Any]]:
         """Randomly sample ``num_iter`` combinations from the search space."""
+        hps = self._validate_hps(hps)
         if hps is None:
             return [{}]
 
-        combinations = super().all_combinations(hps)
+        keys = list(hps)
+        values = [hps[key] for key in keys]
+        total_combinations = prod(len(candidates) for candidates in values)
         rng = random.Random(self._seed)
         if self._replace:
-            return [dict(rng.choice(combinations)) for _ in range(self._num_iter)]
-        if self._num_iter > len(combinations):
+            return [
+                self._combination_from_index(
+                    keys,
+                    values,
+                    rng.randrange(total_combinations),
+                )
+                for _ in range(self._num_iter)
+            ]
+        if self._num_iter > total_combinations:
             raise ValueError(
                 'num_iter must be less than or equal to the total number of '
-                f'unique combinations ({len(combinations)}) when replace=False.'
+                f'unique combinations ({total_combinations}) when replace=False.'
             )
-        return [dict(combo) for combo in rng.sample(combinations, k=self._num_iter)]
+        return [
+            self._combination_from_index(keys, values, index)
+            for index in rng.sample(range(total_combinations), k=self._num_iter)
+        ]

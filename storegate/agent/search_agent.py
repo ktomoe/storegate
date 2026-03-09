@@ -1,11 +1,12 @@
-import concurrent.futures
 import copy
 import json
 import multiprocessing as mp
 import signal
+from dataclasses import dataclass
 from collections.abc import Sequence
 from contextlib import contextmanager
-from itertools import islice, product
+from itertools import product
+from multiprocessing.connection import Connection, wait
 from pathlib import Path
 from typing import Any
 
@@ -15,26 +16,121 @@ from storegate import logger
 from storegate.agent import Agent
 
 
-def _terminate_executor_processes(
-    executor: concurrent.futures.ProcessPoolExecutor,
+@dataclass
+class _RunningJob:
+    process: mp.Process
+    result_pipe: Connection
+    hps: dict[str, Any]
+    job_id: int
+    trial_id: int | None
+
+
+def _shutdown_running_jobs(
+    running_jobs: dict[int, _RunningJob],
     kill_after: float = 1.0,
 ) -> None:
-    """Terminate all worker processes currently owned by the executor."""
-    processes = list(getattr(executor, '_processes', {}).values())
+    """Terminate any still-running worker processes and close their resources."""
+    jobs = list(running_jobs.values())
+    for job in jobs:
+        job.result_pipe.close()
+        if job.process.is_alive():
+            job.process.terminate()
 
-    for process in processes:
-        if process.is_alive():
-            process.terminate()
+    for job in jobs:
+        job.process.join(timeout=kill_after)
+        if job.process.is_alive():
+            job.process.kill()
+            job.process.join(timeout=kill_after)
+        job.process.close()
 
-    for process in processes:
-        process.join(timeout=kill_after)
-        if process.is_alive():
-            process.kill()
-            process.join(timeout=kill_after)
+
+def _close_finished_job(job: _RunningJob) -> None:
+    """Close resources for a worker that has already exited."""
+    job.result_pipe.close()
+    job.process.join()
+    job.process.close()
+
+
+def _execute_task_in_subprocess(
+    task: Any,
+    hps: dict[str, Any],
+    job_id: int,
+    trial_id: int | None,
+    suffix_job_id: bool,
+    result_pipe: Connection,
+) -> None:
+    task_hps = dict(hps)
+    result: dict[str, Any] = {
+        'hps': task_hps,
+        'job_id': job_id,
+        'trial_id': trial_id,
+    }
+
+    try:
+        if suffix_job_id and hasattr(task, '_output_var_names'):
+            base_output_var_names = task_hps.get(
+                'output_var_names',
+                getattr(task, '_output_var_names'),
+            )
+            task_hps['output_var_names'] = SearchAgent._suffix_output_var_names(
+                base_output_var_names,
+                job_id,
+            )
+        task.set_hps(task_hps)
+        result['result'] = task.execute()
+    except Exception as e:
+        result['error'] = f'{type(e).__name__}: {e}'
+        logger.error(f'Job {job_id} (trial {trial_id}) failed: {result["error"]}')
+    finally:
+        try:
+            task.finalize()
+        except Exception as e:
+            logger.error(
+                f'Job {job_id} (trial {trial_id}) finalize failed: '
+                f'{type(e).__name__}: {e}'
+            )
+        try:
+            result_pipe.send(result)
+        except (BrokenPipeError, EOFError, OSError):
+            pass
+        result_pipe.close()
 
 
 class SearchAgent(Agent):
     """Search agent class of agent."""
+
+    @staticmethod
+    def _validate_cuda_id(cuda_id: object) -> None:
+        if not isinstance(cuda_id, int) or isinstance(cuda_id, bool):
+            raise TypeError(
+                f'cuda_ids must contain only non-negative integers, got: {cuda_id!r}.'
+            )
+        if cuda_id < 0:
+            raise ValueError(
+                f'cuda_ids must contain only non-negative integers, got: {cuda_id!r}.'
+            )
+
+    @classmethod
+    def _validate_cuda_ids(cls, cuda_ids: list[int] | None) -> list[int] | None:
+        if isinstance(cuda_ids, int):
+            raise TypeError(
+                f'cuda_ids must be a list of device IDs (e.g. [0, 1]), not an int. '
+                f'Got: {cuda_ids!r}'
+            )
+        if cuda_ids is None:
+            return None
+        if not isinstance(cuda_ids, list):
+            raise TypeError(
+                f'cuda_ids must be a list of non-negative integers, got: {type(cuda_ids).__name__}.'
+            )
+        if len(cuda_ids) == 0:
+            raise ValueError(
+                'cuda_ids must not be an empty list. Use None for single-worker execution.'
+            )
+        for cuda_id in cuda_ids:
+            cls._validate_cuda_id(cuda_id)
+        return cuda_ids
+
     def __init__(self,
                  task: Any = None,
                  hps: dict[str, list[Any]] | None = None,
@@ -68,32 +164,10 @@ class SearchAgent(Agent):
                 hyperparameters with ``_job{job_id}`` appended to every output variable
                 name. Supports ``str``, ``list[str]``, and phase dictionaries.
         """
-        if isinstance(cuda_ids, int):
-            raise TypeError(
-                f'cuda_ids must be a list of device IDs (e.g. [0, 1]), not an int. '
-                f'Got: {cuda_ids!r}'
-            )
-        if cuda_ids is not None:
-            if not isinstance(cuda_ids, list):
-                raise TypeError(
-                    f'cuda_ids must be a list of non-negative integers, got: {type(cuda_ids).__name__}.'
-                )
-            if len(cuda_ids) == 0:
-                raise ValueError('cuda_ids must not be an empty list. Use None for single-worker execution.')
-            for cuda_id in cuda_ids:
-                if not isinstance(cuda_id, int) or isinstance(cuda_id, bool):
-                    raise TypeError(
-                        f'cuda_ids must contain only non-negative integers, got: {cuda_id!r}.'
-                    )
-                if cuda_id < 0:
-                    raise ValueError(
-                        f'cuda_ids must contain only non-negative integers, got: {cuda_id!r}.'
-                    )
-
         self._task = task
         self._hps: list[dict[str, Any]] = self.all_combinations(hps)
         self._num_trials = num_trials
-        self._cuda_ids = cuda_ids
+        self._cuda_ids = self._validate_cuda_ids(cuda_ids)
         self._disable_tqdm = disable_tqdm
         self._json_dump: Path | None = self._validate_json_dump(json_dump)
         self._job_timeout = job_timeout
@@ -189,6 +263,14 @@ class SearchAgent(Agent):
             f'when suffix_job_id=True, got {type(output_var_names).__name__}.'
         )
 
+    def _build_job_args(self) -> list[list[Any]]:
+        trial_ids = [None] if self._num_trials is None else list(range(self._num_trials))
+        return [
+            [self._task, hps, job_id, trial_id]
+            for job_id, hps in enumerate(self._hps)
+            for trial_id in trial_ids
+        ]
+
     def execute(self) -> None:
         """Run all hyperparameter jobs and collect results into ``_history``.
 
@@ -198,14 +280,7 @@ class SearchAgent(Agent):
             calling ``execute()`` again if you need to preserve them.
         """
         self._history = []
-        args: list[list[Any]] = []
-
-        for job_id, hps in enumerate(self._hps):
-            if self._num_trials is None:
-                args.append([self._task, hps, job_id, None])
-            else:
-                for trial_id in range(self._num_trials):
-                    args.append([self._task, hps, job_id, trial_id])
+        args = self._build_job_args()
 
         if self._cuda_ids is None:
             self.execute_serial_jobs(args)
@@ -270,126 +345,153 @@ class SearchAgent(Agent):
         """(expert method) Execute multiprocessing pool jobs.
 
         Uses a sliding-window submission strategy: at most ``num_workers``
-        futures are in-flight at any time.  A new job is submitted only after
-        a running job completes, so memory usage stays proportional to the
+        child processes are in-flight at any time. A new job is submitted only
+        after a running job exits, so memory usage stays proportional to the
         worker count rather than the total number of jobs.
 
-        If ``job_timeout`` was set at construction, each call to
-        ``concurrent.futures.wait`` is bounded by that duration.  When the
-        timeout expires with no completed jobs, all remaining pending jobs are
-        cancelled and a ``TimeoutError`` entry is appended to ``_history`` for
-        each cancelled job.
+        If ``job_timeout`` was set at construction, the parent waits at most
+        that many seconds for any worker to exit. When the timeout expires with
+        no completed jobs, all running and queued jobs are recorded as timed
+        out, and active workers are terminated in the unified shutdown path.
         """
         if self._cuda_ids is None:
             raise RuntimeError('execute_pool_jobs() requires cuda_ids to be set.')
         cuda_ids: Sequence[int] = self._cuda_ids
         num_jobs = len(args)
         num_workers = len(cuda_ids)
+        context = mp.get_context(self._context)
 
         pbar_args = dict(ncols=80, total=num_jobs, disable=self._disable_tqdm)
 
-        # Maps each future back to its original job_arg so we can build a
-        # meaningful error record if the future is cancelled due to timeout.
-        future_to_arg: dict[concurrent.futures.Future[dict[str, Any]], list[Any]] = {}
-
         def _submit(
-            executor: concurrent.futures.ProcessPoolExecutor,
             ii: int,
             job_arg: list[Any],
-        ) -> concurrent.futures.Future[dict[str, Any]]:
+            running_jobs: dict[int, _RunningJob],
+        ) -> None:
             task, hps, job_id, trial_id = job_arg
+            task_hps = dict(hps)
             cuda_id = cuda_ids[ii % num_workers]
-            if cuda_id is not None:
-                hps = dict(hps)
-                hps['cuda_id'] = cuda_id
-            future = executor.submit(self.execute_task, task, hps, job_id, trial_id)
-            future_to_arg[future] = [task, hps, job_id, trial_id]
-            return future
+            task_hps['cuda_id'] = cuda_id
+
+            parent_pipe, child_pipe = context.Pipe(duplex=False)
+            process = context.Process(
+                target=_execute_task_in_subprocess,
+                args=(
+                    task,
+                    task_hps,
+                    job_id,
+                    trial_id,
+                    self._suffix_job_id,
+                    child_pipe,
+                ),
+            )
+            process.start()
+            child_pipe.close()
+            running_jobs[process.sentinel] = _RunningJob(
+                process=process,
+                result_pipe=parent_pipe,
+                hps=task_hps,
+                job_id=job_id,
+                trial_id=trial_id,
+            )
 
         args_iter = iter(enumerate(args))
-
-        executor = concurrent.futures.ProcessPoolExecutor(
-            max_workers=num_workers,
-            mp_context=mp.get_context(self._context),
-            max_tasks_per_child=1,
-        )
+        running_jobs: dict[int, _RunningJob] = {}
 
         try:
             with tqdm(**pbar_args) as pbar:
-                # Fill the initial window (at most num_workers jobs in-flight).
-                pending: set[concurrent.futures.Future[dict[str, Any]]] = {
-                    _submit(executor, ii, job_arg)
-                    for ii, job_arg in islice(args_iter, num_workers)
-                }
+                while len(running_jobs) < num_workers:
+                    try:
+                        ii, job_arg = next(args_iter)
+                    except StopIteration:
+                        break
+                    _submit(ii, job_arg, running_jobs)
 
-                while pending:
-                    done, pending = concurrent.futures.wait(
-                        pending,
+                while running_jobs:
+                    ready_sentinels = wait(
+                        list(running_jobs),
                         timeout=self._job_timeout,
-                        return_when=concurrent.futures.FIRST_COMPLETED,
                     )
 
-                    if not done:
-                        # Timeout: no job finished within job_timeout seconds.
-                        # Cancel and record all futures currently in-flight.
-                        for future in list(pending):
-                            future.cancel()
-                            _, hps, job_id, trial_id = future_to_arg.pop(future)
-                            error_msg = (
-                                f'TimeoutError: job did not complete within {self._job_timeout}s'
-                            )
+                    if not ready_sentinels:
+                        error_msg = (
+                            f'TimeoutError: job did not complete within {self._job_timeout}s'
+                        )
+                        for job in running_jobs.values():
                             self._history.append({
-                                'hps': hps,
-                                'job_id': job_id,
-                                'trial_id': trial_id,
+                                'hps': job.hps,
+                                'job_id': job.job_id,
+                                'trial_id': job.trial_id,
                                 'error': error_msg,
                             })
-                            logger.error(f'Job {job_id} (trial {trial_id}) timed out after {self._job_timeout}s')
+                            logger.error(
+                                f'Job {job.job_id} (trial {job.trial_id}) timed out after '
+                                f'{self._job_timeout}s'
+                            )
                             pbar.update(1)
-                        # Also record timeout for jobs that were never submitted
-                        # (still waiting in the sliding-window queue).
                         for _, job_arg in args_iter:
                             _, hps, job_id, trial_id = job_arg
-                            error_msg = (
-                                f'TimeoutError: job did not complete within {self._job_timeout}s'
-                            )
                             self._history.append({
                                 'hps': hps,
                                 'job_id': job_id,
                                 'trial_id': trial_id,
                                 'error': error_msg,
                             })
-                            logger.error(f'Job {job_id} (trial {trial_id}) timed out after {self._job_timeout}s')
+                            logger.error(
+                                f'Job {job_id} (trial {trial_id}) timed out after '
+                                f'{self._job_timeout}s'
+                            )
                             pbar.update(1)
-                        _terminate_executor_processes(executor)
-                        executor.shutdown(wait=False, cancel_futures=True)
                         break
 
-                    for future in done:
-                        completed_job_arg: list[Any] | None = future_to_arg.pop(future) if future in future_to_arg else None
-                        try:
-                            self._history.append(future.result())
-                        except Exception as e:
-                            if completed_job_arg is None:
-                                hps = {}
-                                job_id = -1
-                                trial_id = None
-                            else:
-                                _, hps, job_id, trial_id = completed_job_arg
-                            error_msg = f'{type(e).__name__}: {e}'
-                            self._history.append({'hps': hps, 'job_id': job_id, 'trial_id': trial_id, 'error': error_msg})
-                            logger.error(f'Job {job_id} (trial {trial_id}) raised in worker: {error_msg}')
+                    for sentinel in ready_sentinels:
+                        job = running_jobs.pop(sentinel)
+                        if job.result_pipe.poll():
+                            try:
+                                self._history.append(job.result_pipe.recv())
+                            except EOFError:
+                                error_msg = (
+                                    'ChildProcessError: worker exited before returning '
+                                    f'a result (exit code {job.process.exitcode}).'
+                                )
+                                self._history.append({
+                                    'hps': job.hps,
+                                    'job_id': job.job_id,
+                                    'trial_id': job.trial_id,
+                                    'error': error_msg,
+                                })
+                                logger.error(
+                                    f'Job {job.job_id} (trial {job.trial_id}) raised in '
+                                    f'worker: {error_msg}'
+                                )
+                        else:
+                            error_msg = (
+                                'ChildProcessError: worker exited before returning '
+                                f'a result (exit code {job.process.exitcode}).'
+                            )
+                            self._history.append({
+                                'hps': job.hps,
+                                'job_id': job.job_id,
+                                'trial_id': job.trial_id,
+                                'error': error_msg,
+                            })
+                            logger.error(
+                                f'Job {job.job_id} (trial {job.trial_id}) raised in '
+                                f'worker: {error_msg}'
+                            )
+                        _close_finished_job(job)
                         pbar.update(1)
                         if self._disable_tqdm:
                             logger.info(f'completed process ({len(self._history)}/{num_jobs})')
-                        # A slot is free — submit the next job immediately.
+
+                    while len(running_jobs) < num_workers:
                         try:
                             ii, job_arg = next(args_iter)
-                            pending.add(_submit(executor, ii, job_arg))
                         except StopIteration:
-                            pass
+                            break
+                        _submit(ii, job_arg, running_jobs)
         finally:
-            executor.shutdown(wait=False, cancel_futures=True)
+            _shutdown_running_jobs(running_jobs)
 
 
     def execute_task(

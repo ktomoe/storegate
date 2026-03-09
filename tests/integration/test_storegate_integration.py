@@ -8,11 +8,28 @@ from storegate import StoreGate
 DATA_ID = 'dataset'
 
 
-@pytest.fixture
-def sg(tmp_path):
+def _make_store(tmp_path, *, backend: str | None = None):
     store = StoreGate(output_dir=str(tmp_path), mode='w')
     store.set_data_id(DATA_ID)
+    if backend is not None:
+        store.set_backend(backend)
     return store
+
+
+def _reopen_store(tmp_path):
+    store = StoreGate(output_dir=str(tmp_path), mode='r')
+    store.set_data_id(DATA_ID)
+    return store
+
+
+def _assert_lengths(sg, **phase_lengths):
+    for phase, expected in phase_lengths.items():
+        assert len(sg[phase]) == expected
+
+
+@pytest.fixture
+def sg(tmp_path):
+    return _make_store(tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -27,9 +44,7 @@ def test_full_workflow_zarr_backend(sg):
     sg.add_data_splits('x', train=x_train, valid=x_valid, test=x_test)
     sg.compile()
 
-    assert len(sg['train']) == 100
-    assert len(sg['valid']) == 20
-    assert len(sg['test']) == 10
+    _assert_lengths(sg, train=100, valid=20, test=10)
 
     np.testing.assert_array_equal(sg.get_data('x', 'train', None), x_train)
     np.testing.assert_array_equal(sg.get_data('x', 'valid', None), x_valid)
@@ -37,9 +52,7 @@ def test_full_workflow_zarr_backend(sg):
 
 
 def test_full_workflow_numpy_backend(tmp_path):
-    sg = StoreGate(output_dir=str(tmp_path), mode='w')
-    sg.set_data_id(DATA_ID)
-    sg.set_backend('numpy')
+    sg = _make_store(tmp_path, backend='numpy')
 
     x_train = np.random.rand(50, 3).astype(np.float64)
     sg.add_data('x', x_train, phase='train')
@@ -160,12 +173,10 @@ def test_copy_to_memory_with_rename(sg):
 def test_zarr_data_persists_across_instances(tmp_path):
     data = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
 
-    sg_write = StoreGate(output_dir=str(tmp_path), mode='w')
-    sg_write.set_data_id(DATA_ID)
+    sg_write = _make_store(tmp_path)
     sg_write.add_data('x', data, phase='train')
 
-    sg_read = StoreGate(output_dir=str(tmp_path), mode='r')
-    sg_read.set_data_id(DATA_ID)
+    sg_read = _reopen_store(tmp_path)
     result = sg_read.get_data('x', 'train', None)
     np.testing.assert_array_equal(result, data)
 
@@ -174,12 +185,10 @@ def test_zarr_data_persists_multiple_phases(tmp_path):
     x_train = np.random.rand(10, 3).astype(np.float32)
     x_valid = np.random.rand(5, 3).astype(np.float32)
 
-    sg_write = StoreGate(output_dir=str(tmp_path), mode='w')
-    sg_write.set_data_id(DATA_ID)
+    sg_write = _make_store(tmp_path)
     sg_write.add_data_splits('x', train=x_train, valid=x_valid)
 
-    sg_read = StoreGate(output_dir=str(tmp_path), mode='r')
-    sg_read.set_data_id(DATA_ID)
+    sg_read = _reopen_store(tmp_path)
     np.testing.assert_array_equal(sg_read.get_data('x', 'train', None), x_train)
     np.testing.assert_array_equal(sg_read.get_data('x', 'valid', None), x_valid)
 
@@ -247,17 +256,13 @@ def test_incremental_add_and_compile(sg):
 
 def test_metadata_restored_after_reopen(tmp_path):
     """After compile(), reopening the store allows len() without calling compile() again."""
-    sg = StoreGate(output_dir=str(tmp_path), mode='w')
-    sg.set_data_id(DATA_ID)
+    sg = _make_store(tmp_path)
     sg.add_data('x', np.array([[1.0], [2.0], [3.0]]), phase='train')
     sg.add_data('x', np.array([[4.0]]), phase='valid')
     sg.compile()
 
-    sg2 = StoreGate(output_dir=str(tmp_path), mode='r')
-    sg2.set_data_id(DATA_ID)
-
-    assert len(sg2['train']) == 3
-    assert len(sg2['valid']) == 1
+    sg2 = _reopen_store(tmp_path)
+    _assert_lengths(sg2, train=3, valid=1)
 
 
 def test_metadata_restored_multi_data_id(tmp_path):
@@ -282,14 +287,12 @@ def test_metadata_restored_multi_data_id(tmp_path):
 
 def test_metadata_invalidated_after_add_data(tmp_path):
     """add_data after compile() persists compiled=False so reopening correctly requires compile()."""
-    sg = StoreGate(output_dir=str(tmp_path), mode='w')
-    sg.set_data_id(DATA_ID)
+    sg = _make_store(tmp_path)
     sg.add_data('x', np.array([[1.0], [2.0]]), phase='train')
     sg.compile()
     sg.add_data('x', np.array([[3.0]]), phase='train')  # invalidates compiled flag
 
-    sg2 = StoreGate(output_dir=str(tmp_path), mode='r')
-    sg2.set_data_id(DATA_ID)
+    sg2 = _reopen_store(tmp_path)
 
     with pytest.raises(ValueError, match='compile'):
         len(sg2['train'])
@@ -297,13 +300,11 @@ def test_metadata_invalidated_after_add_data(tmp_path):
 
 def test_metadata_not_present_requires_compile(tmp_path):
     """A store written without compile() still requires compile() after reopening."""
-    sg = StoreGate(output_dir=str(tmp_path), mode='w')
-    sg.set_data_id(DATA_ID)
+    sg = _make_store(tmp_path)
     sg.add_data('x', np.array([[1.0]]), phase='train')
     # compile() not called
 
-    sg2 = StoreGate(output_dir=str(tmp_path), mode='r')
-    sg2.set_data_id(DATA_ID)
+    sg2 = _reopen_store(tmp_path)
 
     with pytest.raises(ValueError, match='compile'):
         len(sg2['train'])
@@ -311,13 +312,11 @@ def test_metadata_not_present_requires_compile(tmp_path):
 
 def test_metadata_compiled_false_does_not_persist(tmp_path):
     """Re-compiling after add_data saves compiled=True so len() works again after reopen."""
-    sg = StoreGate(output_dir=str(tmp_path), mode='w')
-    sg.set_data_id(DATA_ID)
+    sg = _make_store(tmp_path)
     sg.add_data('x', np.array([[1.0], [2.0]]), phase='train')
     sg.compile()
     sg.add_data('x', np.array([[3.0]]), phase='train')
     sg.compile()  # recompile: saves compiled=True, size=3
 
-    sg2 = StoreGate(output_dir=str(tmp_path), mode='r')
-    sg2.set_data_id(DATA_ID)
-    assert len(sg2['train']) == 3
+    sg2 = _reopen_store(tmp_path)
+    _assert_lengths(sg2, train=3)

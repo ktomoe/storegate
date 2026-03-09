@@ -155,6 +155,7 @@ def require_data_id(method: _F) -> _F:
 
 
 _VALID_IDENTIFIER = re.compile(r'^[a-zA-Z0-9_-]{1,128}$')
+_SUPPORTED_BACKENDS = ('numpy', 'zarr')
 
 
 def _validate_data_id(data_id: str) -> None:
@@ -180,6 +181,11 @@ def _validate_phase(phase: str, allow_all: bool = False) -> None:
     valid = const.PHASES + ('all',) if allow_all else const.PHASES
     if phase not in valid:
         raise ValueError(f"Invalid phase '{phase}'. Must be one of {valid}.")
+
+
+def _validate_backend(backend: str) -> None:
+    if backend not in _SUPPORTED_BACKENDS:
+        raise ValueError(f'Unsupported backend: "{backend}". Use "numpy" or "zarr".')
 
 
 def _validate_output_dir(output_dir: str, mode: str) -> None:
@@ -350,18 +356,19 @@ class StoreGate:
         self._data_id = data_id
         self._db.initialize(data_id)
 
-        if data_id not in self._metadata:
-            self._metadata[data_id] = {'compiled': {'zarr': False, 'numpy': False},
-                                       'sizes': {'zarr': {}, 'numpy': {}}}
-            self._load_meta(data_id)
+        if data_id in self._metadata:
+            return
+        self._metadata[data_id] = {
+            'compiled': {backend: False for backend in _SUPPORTED_BACKENDS},
+            'sizes': {backend: {} for backend in _SUPPORTED_BACKENDS},
+        }
+        self._load_meta(data_id)
 
 
     @require_data_id
     def set_backend(self, backend: str) -> None:
         """Set backend mode of hybrid architecture."""
-        if backend not in ['numpy', 'zarr']:
-            raise ValueError(f'Unsupported backend: "{backend}". Use "numpy" or "zarr".')
-
+        _validate_backend(backend)
         self._db.set_backend(backend)
 
 
@@ -373,14 +380,17 @@ class StoreGate:
     @contextmanager
     def using_backend(self, backend: str) -> Generator[StoreGate, None, None]:
         """Context manager that temporarily switches to ``backend``, restoring the original on exit."""
-        if backend not in ['numpy', 'zarr']:
-            raise ValueError(f'Unsupported backend: "{backend}". Use "numpy" or "zarr".')
+        _validate_backend(backend)
         old = self.get_backend()
         self.set_backend(backend)
         try:
             yield self
         finally:
             self.set_backend(old)
+
+    @staticmethod
+    def _target_phases(phase: str) -> tuple[str, ...]:
+        return const.PHASES if phase == 'all' else (phase,)
 
 
     @require_data_id
@@ -469,13 +479,10 @@ class StoreGate:
         _validate_var_name(var_name)
         _validate_phase(phase, allow_all=True)
         data_id = self._require_current_data_id()
-        if phase == 'all':
-            for iphase in const.PHASES:
-                if var_name in self.get_var_names(iphase):
-                    self._db.delete_data(data_id, var_name, iphase)
-
-        else:
-            self._db.delete_data(data_id, var_name, phase)
+        for iphase in self._target_phases(phase):
+            if phase == 'all' and var_name not in self.get_var_names(iphase):
+                continue
+            self._db.delete_data(data_id, var_name, iphase)
         self._invalidate_compiled(phase)
 
 
@@ -563,30 +570,10 @@ class StoreGate:
         """
 
         data_id = self._require_current_data_id()
-        num_events: list[int | None] = []
-        for phase in const.PHASES:
-            metadata = self._db.get_metadata(data_id, phase)
-
-            phase_events: list[int] = []
-            for data in metadata.values():
-                phase_events.append(data['total_events'])
-
-            if len(set(phase_events)) > 1:
-                detail = '\n'.join(
-                    f'  {k}: {v["total_events"]} events' for k, v in metadata.items()
-                )
-                raise ValueError(
-                    f"Inconsistent event counts in '{phase}' phase:\n{detail}"
-                )
-
-            if phase_events:
-                num_events.append(phase_events[0])
-            else:
-                num_events.append(None)
-
         backend = self.get_backend()
         next_sizes = {
-            phase: events for phase, events in zip(const.PHASES, num_events)
+            phase: self._phase_total_events(self._db.get_metadata(data_id, phase), phase)
+            for phase in const.PHASES
         }
 
         if cross_backend:
@@ -598,6 +585,16 @@ class StoreGate:
 
         if show_info:
             self.show_info()
+
+    @staticmethod
+    def _phase_total_events(metadata: dict[str, Any], phase: str) -> int | None:
+        phase_events = [data['total_events'] for data in metadata.values()]
+        if len(set(phase_events)) > 1:
+            detail = '\n'.join(
+                f'  {name}: {info["total_events"]} events' for name, info in metadata.items()
+            )
+            raise ValueError(f"Inconsistent event counts in '{phase}' phase:\n{detail}")
+        return phase_events[0] if phase_events else None
 
     def _check_cross_backend_consistency(self) -> None:
         """Verify that variables present in either backend agree on metadata.
