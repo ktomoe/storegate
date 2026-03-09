@@ -150,6 +150,20 @@ def test_init_auto_device_sets_cpu_and_default_metrics(monkeypatch) -> None:
     assert task._is_gpu is False
 
 
+def test_init_copies_dataset_and_dataloader_args() -> None:
+    dataset_args = {'preload': False}
+    dataloader_args = {'num_workers': 2}
+    task = PytorchTask(
+        storegate=MagicMock(),
+        dataset_args=dataset_args,
+        dataloader_args=dataloader_args,
+    )
+    assert task._dataset_args == dataset_args
+    assert task._dataloader_args == dataloader_args
+    assert task._dataset_args is not dataset_args
+    assert task._dataloader_args is not dataloader_args
+
+
 def test_compile_calls_compile_device_then_super_compile() -> None:
     task = PytorchTask.__new__(PytorchTask)
     calls: list[str] = []

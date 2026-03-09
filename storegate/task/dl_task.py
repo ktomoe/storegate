@@ -1,3 +1,4 @@
+import copy
 from collections.abc import Callable, Mapping
 from typing import Any, cast
 
@@ -43,18 +44,24 @@ class DLTask(AgentTask):
 
         if model_args is None:
             model_args = {}
+        else:
+            model_args = copy.deepcopy(model_args)
 
         if optimizer_args is None:
             optimizer_args = {}
+        else:
+            optimizer_args = copy.deepcopy(optimizer_args)
 
         if loss_args is None:
             loss_args = {}
+        else:
+            loss_args = copy.deepcopy(loss_args)
 
         self._ml = DLEnv()
 
-        self._input_var_names: _VarNames = input_var_names
-        self._output_var_names: _VarNames = output_var_names
-        self._true_var_names: _VarNames = true_var_names
+        self._input_var_names: _VarNames = copy.deepcopy(input_var_names)
+        self._output_var_names: _VarNames = copy.deepcopy(output_var_names)
+        self._true_var_names: _VarNames = copy.deepcopy(true_var_names)
 
         self._model: Any = model
         self._model_args: dict[str, Any] = model_args
@@ -62,7 +69,7 @@ class DLTask(AgentTask):
         self._optimizer_args: dict[str, Any] = optimizer_args
         self._loss: Any = loss
         self._loss_args: dict[str, Any] = loss_args
-        self._metrics: list[str | Callable[..., Any]] | None = metrics
+        self._metrics: list[str | Callable[..., Any]] | None = copy.deepcopy(metrics)
 
         self._num_epochs: int = num_epochs
         self._batch_size: int = batch_size

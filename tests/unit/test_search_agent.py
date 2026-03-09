@@ -54,6 +54,12 @@ class _FailingTask:
         pass
 
 
+class _InitFailTask:
+    """Always raises RuntimeError during construction."""
+    def __init__(self) -> None:
+        raise RuntimeError('init fail')
+
+
 class _SlowTask:
     """Sleeps long enough to reliably trigger job_timeout."""
     def set_hps(self, hps: dict) -> None:
@@ -143,6 +149,21 @@ class _OutputVarNamesTask:
         pass
 
 
+class _NoopTask:
+    """Minimal task class for SearchAgent constructor tests."""
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = dict(kwargs)
+
+    def set_hps(self, hps: dict) -> None:
+        pass
+
+    def execute(self) -> dict:
+        return {}
+
+    def finalize(self) -> None:
+        pass
+
+
 class _FakePipe:
     def __init__(
         self,
@@ -220,8 +241,9 @@ class _FakeContext:
 
 
 def _agent(**kwargs: object) -> SearchAgent:
-    task = kwargs.pop('task', MagicMock(spec=['set_hps', 'execute', 'finalize']))
-    defaults: dict = dict(task=task, hps=None, num_trials=None, cuda_ids=None)
+    task = kwargs.pop('task', _NoopTask)
+    task_args = kwargs.pop('task_args', None)
+    defaults: dict = dict(task=task, task_args=task_args, hps=None, num_trials=None, cuda_ids=None)
     defaults.update(kwargs)
     return SearchAgent(**defaults)
 
@@ -259,9 +281,29 @@ def _execute_pool_jobs_with_fake_worker(
         lambda objects, timeout=None: next(wait_results),
     )
 
-    agent = SearchAgent(task=MagicMock(), hps=None, cuda_ids=[0])
-    agent.execute_pool_jobs([[agent._task, {}, 0, None]])
+    agent = SearchAgent(task=_NoopTask, hps=None, cuda_ids=[0])
+    agent.execute_pool_jobs([[agent._task, agent._task_args, {}, 0, None]])
     return agent
+
+
+# ---------------------------------------------------------------------------
+# Initialization — task / task_args validation
+# ---------------------------------------------------------------------------
+
+def test_task_class_is_accepted() -> None:
+    agent = SearchAgent(task=_NoopTask)
+    assert agent._task is _NoopTask
+    assert agent._task_args == {}
+
+
+def test_task_instance_is_rejected() -> None:
+    with pytest.raises(TypeError, match='Task class'):
+        SearchAgent(task=_NoopTask())  # type: ignore[arg-type]
+
+
+def test_task_args_invalid_type_raises() -> None:
+    with pytest.raises(TypeError, match='task_args must be a dict'):
+        SearchAgent(task=_NoopTask, task_args=['bad'])  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +311,7 @@ def _execute_pool_jobs_with_fake_worker(
 # ---------------------------------------------------------------------------
 
 def test_cuda_ids_as_list_is_accepted() -> None:
-    agent = SearchAgent(task=MagicMock(), cuda_ids=[0, 1])
+    agent = SearchAgent(task=_NoopTask, cuda_ids=[0, 1])
     assert agent._cuda_ids == [0, 1]
 
 
@@ -294,7 +336,7 @@ def test_cuda_ids_invalid_values_raise(
     message: str,
 ) -> None:
     with pytest.raises(error_type, match=message):
-        SearchAgent(task=MagicMock(), cuda_ids=cuda_ids)  # type: ignore[arg-type]
+        SearchAgent(task=_NoopTask, cuda_ids=cuda_ids)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +348,7 @@ def test_num_trials_none_is_accepted() -> None:
 
 
 def test_num_trials_positive_int_is_accepted() -> None:
-    agent = SearchAgent(task=MagicMock(), num_trials=3)
+    agent = SearchAgent(task=_NoopTask, num_trials=3)
     assert agent._num_trials == 3
 
 
@@ -326,7 +368,7 @@ def test_num_trials_invalid_values_raise(
     error_type: type[Exception],
 ) -> None:
     with pytest.raises(error_type, match='positive integer or None'):
-        SearchAgent(task=MagicMock(), num_trials=num_trials)  # type: ignore[arg-type]
+        SearchAgent(task=_NoopTask, num_trials=num_trials)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +381,7 @@ def test_json_dump_none_accepted() -> None:
 
 def test_json_dump_valid_path_accepted(tmp_path: object) -> None:
     path = str(tmp_path / 'result.json')
-    agent = SearchAgent(task=MagicMock(), json_dump=path)
+    agent = SearchAgent(task=_NoopTask, json_dump=path)
     assert agent._json_dump is not None
     assert agent._json_dump.suffix == '.json'
 
@@ -358,7 +400,7 @@ def test_json_dump_invalid_values_raise(
 ) -> None:
     path = json_dump if json_dump.startswith('/') else str(tmp_path / json_dump)
     with pytest.raises(ValueError, match=message):
-        SearchAgent(task=MagicMock(), json_dump=path)
+        SearchAgent(task=_NoopTask, json_dump=path)
 
 
 # ---------------------------------------------------------------------------
@@ -402,7 +444,7 @@ def test_all_combinations_invalid_candidate_containers_raise(
     error_type: type[Exception],
 ) -> None:
     with pytest.raises(error_type, match='non-empty list'):
-        SearchAgent(task=MagicMock(), hps=hps)  # type: ignore[arg-type]
+        SearchAgent(task=_NoopTask, hps=hps)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -412,7 +454,7 @@ def test_all_combinations_invalid_candidate_containers_raise(
 def test_execute_task_returns_hps_and_job_id() -> None:
     task = MagicMock()
     task.execute.return_value = {'score': 0.9}
-    agent = _agent(task=task)
+    agent = _agent()
 
     result = agent.execute_task(task, hps={'lr': 0.1}, job_id=0)
 
@@ -515,7 +557,7 @@ def test_execute_task_in_subprocess_finalize_failure_is_recorded() -> None:
 
     result_pipe = _SendPipe()
     _execute_task_in_subprocess(
-        _FinalizeFailTask(), {}, 0, None, False, result_pipe
+        _FinalizeFailTask, {}, {}, 0, None, False, result_pipe
     )
 
     assert result_pipe.closed is True
@@ -573,7 +615,7 @@ def test_finalize_sorts_history(
 
 def test_finalize_writes_json_file(tmp_path: object) -> None:
     path = tmp_path / 'results.json'
-    agent = SearchAgent(task=MagicMock(), json_dump=str(path))
+    agent = SearchAgent(task=_NoopTask, json_dump=str(path))
     agent._history = [{'job_id': 0, 'trial_id': None, 'result': {'score': 0.9}}]
     agent.finalize()
 
@@ -591,7 +633,7 @@ def test_finalize_without_json_dump_does_not_raise() -> None:
 
 def test_finalize_json_is_valid_and_indented(tmp_path: object) -> None:
     path = tmp_path / 'out.json'
-    agent = SearchAgent(task=MagicMock(), json_dump=str(path))
+    agent = SearchAgent(task=_NoopTask, json_dump=str(path))
     agent._history = [{'job_id': 0, 'trial_id': None}]
     agent.finalize()
 
@@ -603,7 +645,7 @@ def test_finalize_json_is_valid_and_indented(tmp_path: object) -> None:
 def test_finalize_json_dump_normalizes_numpy_paths_classes_and_nan(tmp_path: object) -> None:
     path = tmp_path / 'out.json'
     artifact_path = Path(tmp_path / 'artifact.bin')
-    agent = SearchAgent(task=MagicMock(), json_dump=str(path))
+    agent = SearchAgent(task=_NoopTask, json_dump=str(path))
     agent._history = [{
         'job_id': np.int64(0),
         'trial_id': None,
@@ -641,7 +683,7 @@ def test_finalize_json_dump_normalizes_torch_tensors_when_available(
 ) -> None:
     torch = pytest.importorskip('torch')
     path = tmp_path / 'out.json'
-    agent = SearchAgent(task=MagicMock(), json_dump=str(path))
+    agent = SearchAgent(task=_NoopTask, json_dump=str(path))
     agent._history = [{
         'job_id': 0,
         'trial_id': None,
@@ -669,7 +711,7 @@ def test_grid_search_agent_counts_combinations(
     hps: dict[str, list[object]],
     expected_len: int,
 ) -> None:
-    agent = GridSearchAgent(task=MagicMock(), hps=hps)
+    agent = GridSearchAgent(task=_NoopTask, hps=hps)
     assert len(agent._hps) == expected_len
 
 
@@ -678,25 +720,25 @@ def test_grid_search_agent_counts_combinations(
 # ---------------------------------------------------------------------------
 
 def test_random_search_agent_replace_default_is_false() -> None:
-    agent = RandomSearchAgent(num_iter=2, seed=0, task=MagicMock(), hps={'a': [1, 2]})
+    agent = RandomSearchAgent(num_iter=2, seed=0, task=_NoopTask, hps={'a': [1, 2]})
     assert agent._replace is False
 
 
 def test_random_search_agent_samples_n_iter() -> None:
     agent = RandomSearchAgent(
-        num_iter=5, seed=42, task=MagicMock(),
+        num_iter=5, seed=42, task=_NoopTask,
         hps={'a': [1, 2, 3], 'b': [10, 20, 30]},
     )
     assert len(agent._hps) == 5
 
 
 def test_random_search_agent_reproducible_with_same_seed() -> None:
-    kwargs: dict = dict(task=MagicMock(), hps={'a': [1, 2, 3], 'b': [10, 20]}, num_iter=6)
+    kwargs: dict = dict(task=_NoopTask, hps={'a': [1, 2, 3], 'b': [10, 20]}, num_iter=6)
     assert RandomSearchAgent(seed=0, **kwargs)._hps == RandomSearchAgent(seed=0, **kwargs)._hps
 
 
 def test_random_search_agent_different_seeds_produce_different_samples() -> None:
-    kwargs: dict = dict(task=MagicMock(), hps={'a': list(range(10))}, num_iter=8)
+    kwargs: dict = dict(task=_NoopTask, hps={'a': list(range(10))}, num_iter=8)
     hps0 = RandomSearchAgent(seed=0, **kwargs)._hps
     hps1 = RandomSearchAgent(seed=1, **kwargs)._hps
     assert hps0 != hps1
@@ -718,7 +760,7 @@ def test_random_search_agent_matches_materialized_sampling(
         num_iter=5,
         seed=42,
         replace=replace,
-        task=MagicMock(),
+        task=_NoopTask,
         hps=hps,
     )
     assert agent._hps == expected
@@ -737,14 +779,14 @@ def test_random_search_agent_does_not_call_search_agent_all_combinations(
         num_iter=3,
         seed=0,
         replace=replace,
-        task=MagicMock(),
+        task=_NoopTask,
         hps={'a': list(range(100)), 'b': list(range(100))},
     )
     assert len(agent._hps) == 3
 
 
 def test_random_search_agent_none_hps_returns_single_empty_dict() -> None:
-    agent = RandomSearchAgent(num_iter=5, seed=0, task=MagicMock(), hps=None)
+    agent = RandomSearchAgent(num_iter=5, seed=0, task=_NoopTask, hps=None)
     assert agent._hps == [{}]
 
 
@@ -752,7 +794,7 @@ def test_random_search_agent_replace_false_samples_without_duplicates() -> None:
     agent = RandomSearchAgent(
         num_iter=4,
         seed=7,
-        task=MagicMock(),
+        task=_NoopTask,
         hps={'a': [1, 2], 'b': [10, 20]},
     )
     assert len(agent._hps) == 4
@@ -764,7 +806,7 @@ def test_random_search_agent_replace_false_num_iter_exceeds_search_space_raises(
         RandomSearchAgent(
             num_iter=5,
             seed=0,
-            task=MagicMock(),
+            task=_NoopTask,
             hps={'a': [1, 2], 'b': [10, 20]},
         )
 
@@ -774,7 +816,7 @@ def test_random_search_agent_replace_true_allows_duplicate_samples() -> None:
         num_iter=5,
         seed=0,
         replace=True,
-        task=MagicMock(),
+        task=_NoopTask,
         hps={'a': [1, 2], 'b': [10, 20]},
     )
     assert len(agent._hps) == 5
@@ -787,7 +829,7 @@ def test_random_search_agent_each_sample_uses_valid_values() -> None:
         num_iter=20,
         seed=7,
         replace=True,
-        task=MagicMock(),
+        task=_NoopTask,
         hps=valid,
     )
     for combo in agent._hps:
@@ -808,7 +850,7 @@ def test_random_search_agent_invalid_init_args_raise(
     error_type: type[Exception],
     message: str,
 ) -> None:
-    base_kwargs = dict(num_iter=1, seed=0, replace=False, task=MagicMock(), hps={'a': [1]})
+    base_kwargs = dict(num_iter=1, seed=0, replace=False, task=_NoopTask, hps={'a': [1]})
     base_kwargs.update(kwargs)
     with pytest.raises(error_type, match=message):
         RandomSearchAgent(**base_kwargs)  # type: ignore[arg-type]
@@ -822,21 +864,21 @@ def test_random_search_agent_invalid_init_args_raise(
 
 def test_execute_single_job_populates_history() -> None:
     """execute() with one HP combo fills _history with one entry."""
-    agent = SearchAgent(task=_SumTask(), hps=None)
+    agent = SearchAgent(task=_SumTask, hps=None)
     agent.execute()
     assert len(agent._history) == 1
 
 
 def test_execute_all_combos_collected() -> None:
     """execute() collects one result per HP combination."""
-    agent = SearchAgent(task=_SumTask(), hps={'a': [1, 2], 'b': [10, 20]})
+    agent = SearchAgent(task=_SumTask, hps={'a': [1, 2], 'b': [10, 20]})
     agent.execute()
     assert len(agent._history) == 4
 
 
 def test_execute_result_values_are_correct() -> None:
     """Each result['result'] reflects the HP values passed to that job."""
-    agent = SearchAgent(task=_SumTask(), hps={'a': [3, 7]})
+    agent = SearchAgent(task=_SumTask, hps={'a': [3, 7]})
     agent.execute()
     scores = {r['result']['score'] for r in agent._history}
     assert scores == {3, 7}
@@ -845,21 +887,21 @@ def test_execute_result_values_are_correct() -> None:
 def test_execute_job_ids_cover_full_range() -> None:
     """Every job_id from 0 to n-1 appears exactly once in history."""
     n = 3
-    agent = SearchAgent(task=_SumTask(), hps={'a': [1, 2, 3]})
+    agent = SearchAgent(task=_SumTask, hps={'a': [1, 2, 3]})
     agent.execute()
     assert {r['job_id'] for r in agent._history} == set(range(n))
 
 
 def test_execute_with_num_trials_generates_correct_count() -> None:
     """2 HP combos × 3 trials = 6 history entries."""
-    agent = SearchAgent(task=_SumTask(), hps={'a': [1, 2]}, num_trials=3)
+    agent = SearchAgent(task=_SumTask, hps={'a': [1, 2]}, num_trials=3)
     agent.execute()
     assert len(agent._history) == 6
 
 
 def test_execute_with_num_trials_all_trial_ids_present() -> None:
     """trial_id 0, 1, 2 appear for each job_id."""
-    agent = SearchAgent(task=_SumTask(), hps={'a': [1]}, num_trials=3)
+    agent = SearchAgent(task=_SumTask, hps={'a': [1]}, num_trials=3)
     agent.execute()
     trial_ids = {r['trial_id'] for r in agent._history}
     assert trial_ids == {0, 1, 2}
@@ -867,7 +909,7 @@ def test_execute_with_num_trials_all_trial_ids_present() -> None:
 
 def test_execute_failing_task_error_captured_not_raised() -> None:
     """A task that raises must store 'error' in the result without crashing execute()."""
-    agent = SearchAgent(task=_FailingTask(), hps=None)
+    agent = SearchAgent(task=_FailingTask, hps=None)
     agent.execute()  # must not raise
     assert len(agent._history) == 1
     assert 'error' in agent._history[0]
@@ -875,8 +917,17 @@ def test_execute_failing_task_error_captured_not_raised() -> None:
 
 
 def test_execute_failing_task_has_no_result_key() -> None:
-    agent = SearchAgent(task=_FailingTask(), hps=None)
+    agent = SearchAgent(task=_FailingTask, hps=None)
     agent.execute()
+    assert 'result' not in agent._history[0]
+
+
+def test_execute_init_failing_task_error_captured_not_raised() -> None:
+    agent = SearchAgent(task=_InitFailTask, hps=None)
+    agent.execute()
+    assert len(agent._history) == 1
+    assert 'error' in agent._history[0]
+    assert 'RuntimeError: init fail' == agent._history[0]['error']
     assert 'result' not in agent._history[0]
 
 
@@ -895,7 +946,7 @@ def test_execute_without_cuda_ids_does_not_create_process_pool() -> None:
         def finalize(self) -> None:
             pass
 
-    agent = SearchAgent(task=_LocalTask(), hps={'a': [3]})
+    agent = SearchAgent(task=_LocalTask, hps={'a': [3]})
     agent.execute()
 
     assert agent._history[0]['result'] == {'score': 3}
@@ -903,7 +954,7 @@ def test_execute_without_cuda_ids_does_not_create_process_pool() -> None:
 
 def test_execute_cuda_ids_injected_into_hps() -> None:
     """cuda_id is added to hps before the task sees them."""
-    agent = SearchAgent(task=_HpsRecordTask(), hps=None, cuda_ids=[5])
+    agent = SearchAgent(task=_HpsRecordTask, hps=None, cuda_ids=[5])
     agent.execute()
     assert agent._history[0]['result']['cuda_id'] == 5
 
@@ -911,7 +962,7 @@ def test_execute_cuda_ids_injected_into_hps() -> None:
 def test_execute_cuda_ids_round_robin_two_workers() -> None:
     """With 2 workers and 4 jobs, cuda ids are assigned round-robin: 0,1,0,1."""
     agent = SearchAgent(
-        task=_HpsRecordTask(),
+        task=_HpsRecordTask,
         hps={'a': [1, 2, 3, 4]},
         cuda_ids=[0, 1],
     )
@@ -922,18 +973,18 @@ def test_execute_cuda_ids_round_robin_two_workers() -> None:
 
 
 def test_execute_with_cuda_ids_dispatches_to_pool_jobs() -> None:
-    agent = SearchAgent(task=_HpsRecordTask(), hps=None, cuda_ids=[5])
+    agent = SearchAgent(task=_HpsRecordTask, hps=None, cuda_ids=[5])
     agent.execute_pool_jobs = MagicMock()
     agent.execute_serial_jobs = MagicMock()
 
     agent.execute()
 
-    agent.execute_pool_jobs.assert_called_once_with([[agent._task, {}, 0, None]])
+    agent.execute_pool_jobs.assert_called_once_with([[agent._task, agent._task_args, {}, 0, None]])
     agent.execute_serial_jobs.assert_not_called()
 
 
 def test_suffix_job_id_default_is_true() -> None:
-    agent = SearchAgent(task=MagicMock())
+    agent = SearchAgent(task=_NoopTask)
     assert agent._suffix_job_id is True
 
 
@@ -962,7 +1013,8 @@ def test_suffix_job_id_updates_output_var_names(
     expected: list[object],
 ) -> None:
     agent = SearchAgent(
-        task=_OutputVarNamesTask(output_var_names),
+        task=_OutputVarNamesTask,
+        task_args={'output_var_names': output_var_names},
         hps=hps,
         suffix_job_id=True,
     )
@@ -973,7 +1025,8 @@ def test_suffix_job_id_updates_output_var_names(
 
 def test_suffix_job_id_uses_trial_id_when_num_trials_enabled() -> None:
     agent = SearchAgent(
-        task=_OutputVarNamesTask('pred'),
+        task=_OutputVarNamesTask,
+        task_args={'output_var_names': 'pred'},
         hps=None,
         num_trials=2,
         suffix_job_id=True,
@@ -992,7 +1045,7 @@ def test_execute_then_finalize_writes_json(tmp_path) -> None:
     """Full pipeline: execute() + finalize() produces a valid, sorted JSON file."""
     path = tmp_path / 'results.json'
     agent = SearchAgent(
-        task=_SumTask(),
+        task=_SumTask,
         hps={'v': [10, 20, 30]},
         json_dump=str(path),
     )
@@ -1007,13 +1060,13 @@ def test_execute_then_finalize_writes_json(tmp_path) -> None:
 
 
 def test_execute_history_is_empty_before_execute() -> None:
-    agent = SearchAgent(task=_SumTask(), hps={'a': [1, 2]})
+    agent = SearchAgent(task=_SumTask, hps={'a': [1, 2]})
     assert agent._history == []
 
 
 def test_execute_multiple_calls_reset_history() -> None:
     """Calling execute() twice resets _history; only the latest run is kept."""
-    agent = SearchAgent(task=_SumTask(), hps={'a': [1]})
+    agent = SearchAgent(task=_SumTask, hps={'a': [1]})
     agent.execute()
     agent.execute()
     assert len(agent._history) == 1
@@ -1031,8 +1084,14 @@ def test_execute_multiple_calls_reset_history() -> None:
     ],
 )
 def test_job_timeout_is_stored(job_timeout: float | None, expected: float | None) -> None:
-    agent = SearchAgent(task=MagicMock(), job_timeout=job_timeout)
+    agent = SearchAgent(task=_NoopTask, job_timeout=job_timeout)
     assert agent._job_timeout == expected
+
+
+@pytest.mark.parametrize('job_timeout', [-1.0, 0.0, float('nan')])
+def test_job_timeout_invalid_values_raise(job_timeout: float) -> None:
+    with pytest.raises(ValueError, match='positive finite number'):
+        SearchAgent(task=_NoopTask, job_timeout=job_timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -1041,7 +1100,7 @@ def test_job_timeout_is_stored(job_timeout: float | None, expected: float | None
 
 def test_job_timeout_cancels_slow_jobs() -> None:
     """A job that never completes is cancelled and recorded as a timeout error."""
-    agent = SearchAgent(task=_SlowTask(), hps={'a': [1, 2]}, job_timeout=0.5)
+    agent = SearchAgent(task=_SlowTask, hps={'a': [1, 2]}, job_timeout=0.5)
     agent.execute()
     assert len(agent._history) == 2
     for entry in agent._history:
@@ -1051,14 +1110,14 @@ def test_job_timeout_cancels_slow_jobs() -> None:
 
 def test_job_timeout_error_contains_duration() -> None:
     """The error message includes the configured timeout value."""
-    agent = SearchAgent(task=_SlowTask(), hps=None, job_timeout=0.5)
+    agent = SearchAgent(task=_SlowTask, hps=None, job_timeout=0.5)
     agent.execute()
     assert '0.5' in agent._history[0]['error']
 
 
 def test_job_timeout_error_entry_has_hps_and_job_id() -> None:
     """Timed-out entries preserve hps and job_id for traceability."""
-    agent = SearchAgent(task=_SlowTask(), hps={'lr': [1e-3]}, job_timeout=0.5)
+    agent = SearchAgent(task=_SlowTask, hps={'lr': [1e-3]}, job_timeout=0.5)
     agent.execute()
     entry = agent._history[0]
     assert 'hps' in entry
@@ -1069,7 +1128,7 @@ def test_job_timeout_error_entry_has_hps_and_job_id() -> None:
 def test_job_timeout_returns_promptly() -> None:
     """Timed-out jobs should be terminated instead of running to natural completion."""
     start = time.monotonic()
-    agent = SearchAgent(task=_VerySlowTask(), hps=None, job_timeout=0.2)
+    agent = SearchAgent(task=_VerySlowTask, hps=None, job_timeout=0.2)
     agent.execute()
     elapsed = time.monotonic() - start
 
@@ -1079,7 +1138,7 @@ def test_job_timeout_returns_promptly() -> None:
 
 def test_job_timeout_none_does_not_interfere_with_fast_jobs() -> None:
     """job_timeout=None (default) lets fast jobs complete normally."""
-    agent = SearchAgent(task=_SumTask(), hps={'a': [1, 2]}, job_timeout=None)
+    agent = SearchAgent(task=_SumTask, hps={'a': [1, 2]}, job_timeout=None)
     agent.execute()
     assert all('result' in r for r in agent._history)
 
@@ -1143,7 +1202,7 @@ def test_execute_task_suffix_job_id_applies_expected_value(
     task = MagicMock()
     task._output_var_names = 'pred'
     task.execute.return_value = {}
-    agent = SearchAgent(task=task, suffix_job_id=True)
+    agent = SearchAgent(task=_NoopTask, suffix_job_id=True)
 
     result = agent.execute_task(task, hps=hps, job_id=job_id, trial_id=trial_id)
 
@@ -1156,7 +1215,7 @@ def test_execute_task_suffix_job_id_false_does_not_modify() -> None:
     task = MagicMock()
     task._output_var_names = 'pred'
     task.execute.return_value = {}
-    agent = SearchAgent(task=task, suffix_job_id=False)
+    agent = SearchAgent(task=_NoopTask, suffix_job_id=False)
 
     agent.execute_task(task, hps={'lr': 0.1}, job_id=0)
 
@@ -1168,7 +1227,7 @@ def test_execute_task_suffix_job_id_no_attr_skips() -> None:
     """Task without _output_var_names is not modified even with suffix_job_id=True."""
     task = MagicMock(spec=['set_hps', 'execute', 'finalize'])
     task.execute.return_value = {}
-    agent = SearchAgent(task=task, suffix_job_id=True)
+    agent = SearchAgent(task=_NoopTask, suffix_job_id=True)
 
     agent.execute_task(task, hps={'lr': 0.1}, job_id=0)
 
@@ -1238,7 +1297,7 @@ def test_shutdown_running_jobs_empty_dict() -> None:
 )
 def test_serial_job_timeout_restores_previous_timer() -> None:
     """When a pre-existing ITIMER_REAL is active, it is restored after the context exits."""
-    agent = SearchAgent(task=MagicMock(), job_timeout=10.0)
+    agent = SearchAgent(task=_NoopTask, job_timeout=10.0)
 
     old_handler = signal.getsignal(signal.SIGALRM)
     signal.setitimer(signal.ITIMER_REAL, 50.0)
@@ -1257,7 +1316,7 @@ def test_serial_job_timeout_restores_previous_timer() -> None:
 # ---------------------------------------------------------------------------
 
 def test_execute_pool_jobs_without_cuda_ids_raises() -> None:
-    agent = SearchAgent(task=MagicMock(), cuda_ids=None)
+    agent = SearchAgent(task=_NoopTask, cuda_ids=None)
     with pytest.raises(RuntimeError, match='requires cuda_ids'):
         agent.execute_pool_jobs([])
 
@@ -1339,7 +1398,7 @@ def test_pool_timeout_cancels_pending_and_remaining_jobs() -> None:
     """With 1 worker and 3 slow jobs, timeout cancels the in-flight job
     and records all remaining jobs as timed-out."""
     agent = SearchAgent(
-        task=_SlowTask(),
+        task=_SlowTask,
         hps={'a': [1, 2, 3]},
         cuda_ids=[0],
         job_timeout=0.1,
@@ -1360,7 +1419,7 @@ def test_pool_timeout_cancels_pending_and_remaining_jobs() -> None:
 def test_pool_worker_crash_records_error() -> None:
     """A worker that crashes (os._exit) is caught and recorded as an error."""
     agent = SearchAgent(
-        task=_CrashTask(),
+        task=_CrashTask,
         hps=None,
         cuda_ids=[0],
     )
@@ -1375,7 +1434,8 @@ def test_pool_large_result_is_received_without_timeout() -> None:
     """Large results must be drained from the pipe before waiting only on process exit."""
     payload_size = 2 * 1024 * 1024
     agent = SearchAgent(
-        task=_LargeResultTask(payload_size=payload_size),
+        task=_LargeResultTask,
+        task_args={'payload_size': payload_size},
         hps=None,
         cuda_ids=[0],
         job_timeout=1.0,

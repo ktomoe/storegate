@@ -22,12 +22,13 @@ class RandomSearchAgent(SearchAgent):
 
     Examples:
         >>> agent = RandomSearchAgent(
-        ...     task=my_task,
+        ...     task=MyTask,
+        ...     task_args={'storegate': sg},
         ...     hps={'lr': [1e-3, 1e-4, 1e-5], 'batch_size': [32, 64, 128]},
         ...     num_iter=10,
         ...     seed=42,
         ...     replace=False,
-        ...     cuda_ids=[0, 1],
+        ...     cuda_ids=None,
         ... )
         >>> agent.execute()
         >>> agent.finalize()

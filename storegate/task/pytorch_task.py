@@ -35,8 +35,8 @@ class PytorchTask(DLTask):
         self._device: torch.device = torch.device(device)
         self._torch_compile: bool = torch_compile
         self._torchinfo: bool = torchinfo
-        self._dataset_args: dict[str, Any] | None = dataset_args
-        self._dataloader_args: dict[str, Any] | None = dataloader_args
+        self._dataset_args: dict[str, Any] | None = None if dataset_args is None else dict(dataset_args)
+        self._dataloader_args: dict[str, Any] | None = None if dataloader_args is None else dict(dataloader_args)
 
         self._pbar_args: dict[str, Any] = const.PBAR_ARGS
 

@@ -149,14 +149,28 @@ Exhaustively evaluates all combinations of the given hyperparameter lists.
 ```python
 from storegate.agent import GridSearchAgent
 
+task_args = {
+    'storegate': sg,
+    'input_var_names': ['x'],
+    'true_var_names': ['y'],
+    'output_var_names': ['pred'],
+    'model': nn.Linear,
+    'model_args': {'in_features': 784, 'out_features': 10},
+    'optimizer': 'Adam',
+    'optimizer_args': {'lr': 1e-3},
+    'loss': 'CrossEntropyLoss',
+    'num_epochs': 10,
+}
+
 agent = GridSearchAgent(
-    task=task,
+    task=MyTask,
+    task_args=task_args,
     hps={
         'optimizer__lr':      [1e-3, 1e-4],
         'model__num_filters': [32, 64],
         'batch_size':         [64, 128],
     },
-    cuda_ids=[0, 1],       # injects cuda_id values into jobs in submission order
+    cuda_ids=None,         # set [0, 1] only when task_args are spawn-picklable
     # default suffix_job_id=True writes test outputs as e.g.
     # pred_job0_trial0, pred_job1_trial0, ...
     json_dump='results.json',
@@ -173,7 +187,8 @@ Randomly samples `num_iter` combinations from the search space.
 from storegate.agent import RandomSearchAgent
 
 agent = RandomSearchAgent(
-    task=task,
+    task=MyTask,
+    task_args=task_args,
     hps={
         'optimizer__lr':   [1e-3, 3e-4, 1e-4],
         'batch_size':      [32, 64, 128],
@@ -181,7 +196,7 @@ agent = RandomSearchAgent(
     num_iter=10,
     seed=42,
     replace=False,      # default: unique combinations only
-    cuda_ids=[0],
+    cuda_ids=None,
     json_dump='results.json',
 )
 agent.execute()
@@ -195,12 +210,15 @@ without replacement. Set `replace=True` to allow duplicate combinations.
 When `cuda_ids` is a list, those values control which `cuda_id` is injected into each job's hyperparameters.
 Jobs are assigned IDs in submission order; this is not an exclusive worker-to-GPU binding.
 By default, `suffix_job_id=True`, so `output_var_names` are suffixed with `_job{job_id}_trial{trial_id}` to avoid collisions between parallel jobs and repeated trials. When `num_trials` is not set, the implicit single trial uses `trial0`. Set `suffix_job_id=False` only when each job writes to a different `data_id` or otherwise guarantees isolated output variable names.
+Search agents instantiate a fresh task for each job, so pass the task class via `task=...`
+and constructor kwargs via `task_args={...}` instead of passing a pre-built task instance.
 
 Parallel execution with `cuda_ids=[...]` uses Python multiprocessing with the
 `spawn` start method. Run it from a normal importable Python script (for
 example, `python train.py`). Interactive contexts such as REPL, `python -c`,
 stdin execution, and some notebook environments may fail because worker
-processes cannot re-import `__main__`.
+processes cannot re-import `__main__`. When using `cuda_ids=[...]`, `task_args`
+must also be compatible with `spawn` pickling.
 
 **Hyperparameter key conventions:**
 

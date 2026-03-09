@@ -1,4 +1,4 @@
-import copy
+import inspect
 import json
 import math
 import multiprocessing as mp
@@ -86,7 +86,8 @@ def _record_finalize_error(
 
 
 def _execute_task_in_subprocess(
-    task: Any,
+    task: type[Any],
+    task_args: dict[str, Any],
     hps: dict[str, Any],
     job_id: int,
     trial_id: int | None,
@@ -99,28 +100,31 @@ def _execute_task_in_subprocess(
         'job_id': job_id,
         'trial_id': trial_id,
     }
+    task_instance: Any | None = None
 
     try:
-        if suffix_job_id and hasattr(task, '_output_var_names'):
+        task_instance = task(**task_args)
+        if suffix_job_id and hasattr(task_instance, '_output_var_names'):
             base_output_var_names = task_hps.get(
                 'output_var_names',
-                getattr(task, '_output_var_names'),
+                getattr(task_instance, '_output_var_names'),
             )
             task_hps['output_var_names'] = SearchAgent._suffix_output_var_names(
                 base_output_var_names,
                 job_id,
                 trial_id,
             )
-        task.set_hps(task_hps)
-        result['result'] = task.execute()
+        task_instance.set_hps(task_hps)
+        result['result'] = task_instance.execute()
     except Exception as e:
         result['error'] = f'{type(e).__name__}: {e}'
         logger.error(f'Job {job_id} (trial {trial_id}) failed: {result["error"]}')
     finally:
-        try:
-            task.finalize()
-        except Exception as e:
-            _record_finalize_error(result, job_id, trial_id, e)
+        if task_instance is not None:
+            try:
+                task_instance.finalize()
+            except Exception as e:
+                _record_finalize_error(result, job_id, trial_id, e)
         try:
             result_pipe.send(result)
         except (BrokenPipeError, EOFError, OSError):
@@ -130,6 +134,30 @@ def _execute_task_in_subprocess(
 
 class SearchAgent(Agent):
     """Search agent class of agent."""
+
+    @staticmethod
+    def _validate_task(task: type[Any] | None) -> type[Any]:
+        if task is None:
+            raise ValueError(
+                'task must be provided as a Task class. '
+                'Pass task=MyTask and task_args={...}.'
+            )
+        if not inspect.isclass(task):
+            raise TypeError(
+                'task must be a Task class, not an instance. '
+                'Pass task=MyTask and task_args={...}.'
+            )
+        return task
+
+    @staticmethod
+    def _validate_task_args(task_args: dict[str, Any] | None) -> dict[str, Any]:
+        if task_args is None:
+            return {}
+        if not isinstance(task_args, dict):
+            raise TypeError(
+                f'task_args must be a dict[str, Any] or None, got: {type(task_args).__name__}.'
+            )
+        return dict(task_args)
 
     @staticmethod
     def _validate_cuda_id(cuda_id: object) -> None:
@@ -177,8 +205,26 @@ class SearchAgent(Agent):
             )
         return num_trials
 
+    @staticmethod
+    def _validate_job_timeout(job_timeout: float | None) -> float | None:
+        if job_timeout is None:
+            return None
+        if not isinstance(job_timeout, (int, float)) or isinstance(job_timeout, bool):
+            raise TypeError(
+                'job_timeout must be None or a positive finite number of seconds, '
+                f'got: {job_timeout!r}.'
+            )
+        job_timeout = float(job_timeout)
+        if (not math.isfinite(job_timeout)) or job_timeout <= 0.0:
+            raise ValueError(
+                'job_timeout must be None or a positive finite number of seconds, '
+                f'got: {job_timeout!r}.'
+            )
+        return job_timeout
+
     def __init__(self,
-                 task: Any = None,
+                 task: type[Any] | None = None,
+                 task_args: dict[str, Any] | None = None,
                  hps: dict[str, list[Any]] | None = None,
                  num_trials: int | None = None,
                  cuda_ids: list[int] | None = None,
@@ -189,7 +235,8 @@ class SearchAgent(Agent):
         """Initialize search agent.
 
         Args:
-            task: Task instance to execute.
+            task: Task class to instantiate for each job.
+            task_args: Keyword arguments passed to ``task(...)`` for every job.
             hps (dict): Hyperparameter search space. Each key maps to a list of candidate values.
             num_trials (int or None): Number of repeated trials per hyperparameter set.
             cuda_ids (list[int] or None): List of CUDA device IDs to inject into
@@ -206,19 +253,22 @@ class SearchAgent(Agent):
                 complete.  If no job finishes within this window, all remaining pending
                 jobs are cancelled and a ``TimeoutError`` is recorded in their result
                 entries.  ``None`` (default) means wait indefinitely.
+                When ``cuda_ids`` is set, both ``task`` and ``task_args`` must be
+                compatible with Python ``spawn`` multiprocessing pickling.
             suffix_job_id (bool): If True, inject ``output_var_names`` into each job's
                 hyperparameters with ``_job{job_id}_trial{trial_id}`` appended to
                 every output variable name. When ``trial_id`` is ``None``, the
                 implicit single trial is treated as ``trial0``. Supports ``str``,
                 ``list[str]``, and phase dictionaries.
         """
-        self._task = task
+        self._task = self._validate_task(task)
+        self._task_args = self._validate_task_args(task_args)
         self._hps: list[dict[str, Any]] = self.all_combinations(hps)
         self._num_trials = self._validate_num_trials(num_trials)
         self._cuda_ids = self._validate_cuda_ids(cuda_ids)
         self._disable_tqdm = disable_tqdm
         self._json_dump: Path | None = self._validate_json_dump(json_dump)
-        self._job_timeout = job_timeout
+        self._job_timeout = self._validate_job_timeout(job_timeout)
         self._suffix_job_id = suffix_job_id
 
         self._context = 'spawn'
@@ -321,7 +371,7 @@ class SearchAgent(Agent):
             [None] if self._num_trials is None else list(range(self._num_trials))
         )
         return [
-            [self._task, hps, job_id, trial_id]
+            [self._task, self._task_args, hps, job_id, trial_id]
             for job_id, hps in enumerate(self._hps)
             for trial_id in trial_ids
         ]
@@ -449,15 +499,25 @@ class SearchAgent(Agent):
         pbar_args = dict(ncols=80, total=num_jobs, disable=self._disable_tqdm)
 
         with tqdm(**pbar_args) as pbar:
-            for task, hps, job_id, trial_id in args:
-                task_for_job = copy.deepcopy(task)
-                result = self.execute_task(
-                    task_for_job,
-                    hps,
-                    job_id,
-                    trial_id,
-                    enforce_timeout=True,
-                )
+            for task, task_args, hps, job_id, trial_id in args:
+                try:
+                    task_for_job = task(**task_args)
+                except Exception as e:
+                    result = {
+                        'hps': dict(hps),
+                        'job_id': job_id,
+                        'trial_id': trial_id,
+                        'error': f'{type(e).__name__}: {e}',
+                    }
+                    logger.error(f'Job {job_id} (trial {trial_id}) failed: {result["error"]}')
+                else:
+                    result = self.execute_task(
+                        task_for_job,
+                        hps,
+                        job_id,
+                        trial_id,
+                        enforce_timeout=True,
+                    )
                 self._history.append(result)
                 pbar.update(1)
                 if self._disable_tqdm:
@@ -491,7 +551,7 @@ class SearchAgent(Agent):
             job_arg: list[Any],
             running_jobs: dict[int, _RunningJob],
         ) -> _RunningJob:
-            task, hps, job_id, trial_id = job_arg
+            task, task_args, hps, job_id, trial_id = job_arg
             task_hps = dict(hps)
             cuda_id = cuda_ids[ii % num_workers]
             task_hps['cuda_id'] = cuda_id
@@ -501,6 +561,7 @@ class SearchAgent(Agent):
                 target=_execute_task_in_subprocess,
                 args=(
                     task,
+                    task_args,
                     task_hps,
                     job_id,
                     trial_id,
@@ -557,7 +618,7 @@ class SearchAgent(Agent):
                             )
                             pbar.update(1)
                         for _, job_arg in args_iter:
-                            _, hps, job_id, trial_id = job_arg
+                            _, _, hps, job_id, trial_id = job_arg
                             self._history.append({
                                 'hps': hps,
                                 'job_id': job_id,

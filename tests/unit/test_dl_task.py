@@ -66,14 +66,17 @@ def test_init_none_args_become_empty_dicts() -> None:
     assert task._loss_args == {}
 
 
-def test_init_preserves_explicit_args() -> None:
+def test_init_copies_explicit_mutable_args() -> None:
     m_args = {'hidden': 128}
     o_args = {'lr': 0.01}
     l_args = {'weight': 0.5}
     task = make_task(model_args=m_args, optimizer_args=o_args, loss_args=l_args)
-    assert task._model_args is m_args
-    assert task._optimizer_args is o_args
-    assert task._loss_args is l_args
+    assert task._model_args == m_args
+    assert task._optimizer_args == o_args
+    assert task._loss_args == l_args
+    assert task._model_args is not m_args
+    assert task._optimizer_args is not o_args
+    assert task._loss_args is not l_args
 
 
 def test_init_creates_dl_env() -> None:
