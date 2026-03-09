@@ -485,6 +485,15 @@ class StoreGate:
             self._db.delete_data(data_id, var_name, iphase)
         self._invalidate_compiled(phase)
 
+    @require_data_id
+    def rename_data(self, var_name: str, output_var_name: str, phase: str) -> None:
+        """Rename a variable within the currently active backend."""
+        _validate_var_name(var_name)
+        _validate_var_name(output_var_name)
+        _validate_phase(phase)
+        data_id = self._require_current_data_id()
+        self._db.rename_data(data_id, var_name, output_var_name, phase)
+
 
     @require_data_id
     def get_var_names(self, phase: str) -> list[str]:

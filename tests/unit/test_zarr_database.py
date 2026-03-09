@@ -40,6 +40,14 @@ def test_add_data_appends_to_existing(zarr_db):
     np.testing.assert_array_equal(result, expected)
 
 
+def test_add_data_persists_var_name_registration_order(zarr_db):
+    zarr_db.add_data(DATA_ID, 'x', np.array([[1.0]]), 'train')
+    zarr_db.add_data(DATA_ID, 'y', np.array([[2.0]]), 'train')
+
+    meta = zarr_db.load_meta_attrs(DATA_ID)
+    assert meta['var_names']['train'] == ['x', 'y']
+
+
 def test_add_data_shape_mismatch_raises(zarr_db):
     data1 = np.array([[1.0, 2.0], [3.0, 4.0]])       # shape (2, 2)
     data2 = np.array([[5.0, 6.0, 7.0]])                # shape (1, 3)
@@ -201,11 +209,46 @@ def test_delete_data(zarr_db):
     zarr_db.delete_data(DATA_ID, 'x', 'train')
 
     assert 'x' not in list(zarr_db._db[DATA_ID]['train'].array_keys())
+    assert zarr_db.load_meta_attrs(DATA_ID)['var_names']['train'] == []
 
 
 def test_delete_data_not_found_raises(zarr_db):
     with pytest.raises(KeyError):
         zarr_db.delete_data(DATA_ID, 'nonexistent', 'train')
+
+
+def test_rename_data_streams_in_chunks_and_preserves_order(tmp_path, monkeypatch):
+    db = ZarrDatabase(output_dir=str(tmp_path), chunk=2, mode='w')
+    db.initialize(DATA_ID)
+
+    x = np.arange(10, dtype=np.float32).reshape(5, 2)
+    y = np.arange(5, dtype=np.float32).reshape(5, 1)
+    db.add_data(DATA_ID, 'x', x, 'train')
+    db.add_data(DATA_ID, 'y', y, 'train')
+
+    original_add_data = db.add_data
+    copied_chunk_sizes: list[int] = []
+
+    def wrapped_add_data(data_id, var_name, data, phase):
+        if var_name == 'z':
+            copied_chunk_sizes.append(len(data))
+        return original_add_data(data_id, var_name, data, phase)
+
+    monkeypatch.setattr(db, 'add_data', wrapped_add_data)
+
+    db.rename_data(DATA_ID, 'x', 'z', 'train')
+
+    assert copied_chunk_sizes == [2, 2, 1]
+    assert list(db.get_metadata(DATA_ID, 'train')) == ['z', 'y']
+    np.testing.assert_array_equal(db.get_data(DATA_ID, 'z', 'train', None), x)
+
+
+def test_rename_data_existing_destination_raises(zarr_db):
+    zarr_db.add_data(DATA_ID, 'x', np.array([[1.0]]), 'train')
+    zarr_db.add_data(DATA_ID, 'y', np.array([[2.0]]), 'train')
+
+    with pytest.raises(ValueError, match='already exists'):
+        zarr_db.rename_data(DATA_ID, 'x', 'y', 'train')
 
 
 def test_get_metadata_returns_correct_structure(zarr_db):
@@ -220,9 +263,39 @@ def test_get_metadata_returns_correct_structure(zarr_db):
     assert metadata['x']['backend'] == 'zarr'
 
 
+def test_get_metadata_returns_variables_in_registration_order(zarr_db):
+    zarr_db.add_data(DATA_ID, 'x', np.array([[1.0]]), 'train')
+    zarr_db.add_data(DATA_ID, 'y', np.array([[2.0]]), 'train')
+
+    metadata = zarr_db.get_metadata(DATA_ID, 'train')
+    assert list(metadata) == ['x', 'y']
+
+
+def test_save_meta_attrs_preserves_var_name_order(zarr_db):
+    zarr_db.add_data(DATA_ID, 'x', np.array([[1.0]]), 'train')
+    zarr_db.save_meta_attrs(DATA_ID, {'compiled': {'zarr': True}})
+
+    meta = zarr_db.load_meta_attrs(DATA_ID)
+    assert meta['compiled']['zarr'] is True
+    assert meta['var_names']['train'] == ['x']
+
+
 def test_get_metadata_empty_phase(zarr_db):
     metadata = zarr_db.get_metadata(DATA_ID, 'train')
     assert metadata == {}
+
+
+def test_initialize_bootstraps_var_names_for_existing_arrays(tmp_path):
+    db = ZarrDatabase(output_dir=str(tmp_path), chunk=100, mode='w')
+    db.initialize(DATA_ID)
+    db._db[DATA_ID]['train'].create_array(name='b', data=np.array([[1.0]]), chunks=(100, 1))
+    db._db[DATA_ID]['train'].create_array(name='a', data=np.array([[2.0]]), chunks=(100, 1))
+    db._db[DATA_ID].attrs.clear()
+
+    reopened = ZarrDatabase(output_dir=str(tmp_path), chunk=100, mode='a')
+    reopened.initialize(DATA_ID)
+
+    assert reopened.load_meta_attrs(DATA_ID)['var_names']['train'] == ['a', 'b']
 
 
 def test_get_metadata_unknown_data_id(tmp_path):

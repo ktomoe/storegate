@@ -46,6 +46,15 @@ class HybridDatabase(Database):
     def delete_data(self, data_id: str, var_name: str, phase: str) -> None:
         self._db[self._backend].delete_data(data_id, var_name, phase)
 
+    def rename_data(
+        self,
+        data_id: str,
+        var_name: str,
+        output_var_name: str,
+        phase: str,
+    ) -> None:
+        self._db[self._backend].rename_data(data_id, var_name, output_var_name, phase)
+
     def get_metadata(self, data_id: str, phase: str) -> dict[str, Any]:
         return self._db[self._backend].get_metadata(data_id, phase)
 

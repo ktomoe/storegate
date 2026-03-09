@@ -93,6 +93,16 @@ class Database(metaclass=ABCMeta):
         """Delete data for given data_id, var_name and phase from database."""
 
     @abstractmethod
+    def rename_data(
+        self,
+        data_id: str,
+        var_name: str,
+        output_var_name: str,
+        phase: str,
+    ) -> None:
+        """Rename data for given data_id, var_name and phase within one backend."""
+
+    @abstractmethod
     def get_metadata(self, data_id: str, phase: str) -> dict[str, Any]:
         """Returns a dictionary of metadata for a given data_id and phase.
 

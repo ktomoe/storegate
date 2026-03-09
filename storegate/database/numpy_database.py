@@ -44,6 +44,17 @@ class NumpyDatabase(Database):
             self._chunks[data_id][phase][var_name] = [arr]
         return self._cache[data_id][phase][var_name]  # type: ignore[return-value]
 
+    @staticmethod
+    def _rename_mapping_key(
+        mapping: dict[str, Any],
+        old_key: str,
+        new_key: str,
+    ) -> dict[str, Any]:
+        renamed: dict[str, Any] = {}
+        for key, value in mapping.items():
+            renamed[new_key if key == old_key else key] = value
+        return renamed
+
     def add_data(self, data_id: str, var_name: str, data: np.ndarray, phase: str) -> None:
         if var_name in self._chunks[data_id][phase]:
             meta = self._metadata[data_id][phase][var_name]
@@ -101,6 +112,37 @@ class NumpyDatabase(Database):
         del self._chunks[data_id][phase][var_name]
         del self._cache[data_id][phase][var_name]
         del self._metadata[data_id][phase][var_name]
+
+    def rename_data(
+        self,
+        data_id: str,
+        var_name: str,
+        output_var_name: str,
+        phase: str,
+    ) -> None:
+        phase_chunks = self._chunks[data_id][phase]
+        if var_name not in phase_chunks:
+            raise KeyError(f'"{var_name}" not found in {phase} phase.')
+        if var_name == output_var_name:
+            return
+        if output_var_name in phase_chunks:
+            raise ValueError(f'"{output_var_name}" already exists in {phase} phase.')
+
+        self._chunks[data_id][phase] = self._rename_mapping_key(
+            self._chunks[data_id][phase],
+            var_name,
+            output_var_name,
+        )
+        self._cache[data_id][phase] = self._rename_mapping_key(
+            self._cache[data_id][phase],
+            var_name,
+            output_var_name,
+        )
+        self._metadata[data_id][phase] = self._rename_mapping_key(
+            self._metadata[data_id][phase],
+            var_name,
+            output_var_name,
+        )
 
     def get_metadata(self, data_id: str, phase: str) -> dict[str, Any]:
         if data_id not in self._metadata:

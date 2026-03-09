@@ -7,6 +7,8 @@ import zarr
 from storegate import const
 from storegate.database.database import Database
 
+_STOREGATE_META_KEY = '_storegate_meta'
+
 
 class ZarrDatabase(Database):
     """Base class of Zarr database."""
@@ -32,11 +34,115 @@ class ZarrDatabase(Database):
         db_data_id = self._db.require_group(data_id)
         for phase in const.PHASES:
             db_data_id.require_group(phase)
+        self._bootstrap_var_names(data_id)
+
+    def _load_storegate_meta(self, data_id: str) -> dict[str, Any]:
+        if data_id not in self._db.group_keys():
+            return {}
+
+        raw = self._db[data_id].attrs.get(_STOREGATE_META_KEY, {})
+        meta = dict(raw) if isinstance(raw, dict) else {}
+
+        raw_var_names = meta.get('var_names', {})
+        var_names = {
+            phase: list(raw_var_names.get(phase, []))
+            if isinstance(raw_var_names, dict) else []
+            for phase in const.PHASES
+        }
+        meta['var_names'] = var_names
+        return meta
+
+    def _save_storegate_meta(self, data_id: str, meta: dict[str, Any]) -> None:
+        if self._mode == 'r':
+            return
+        self._db[data_id].attrs[_STOREGATE_META_KEY] = meta
+
+    def _bootstrap_var_names(self, data_id: str) -> None:
+        raw_meta = self._db[data_id].attrs.get(_STOREGATE_META_KEY, {})
+        meta = self._load_storegate_meta(data_id)
+        changed = not isinstance(raw_meta, dict) or 'var_names' not in raw_meta
+
+        for phase in const.PHASES:
+            current_names = sorted(self._db[data_id][phase].array_keys())
+            saved_names = meta['var_names'].get(phase, [])
+            ordered_names = [
+                name for name in saved_names
+                if name in current_names
+            ]
+            extras = [name for name in current_names if name not in ordered_names]
+            if ordered_names + extras != saved_names:
+                meta['var_names'][phase] = ordered_names + extras
+                changed = True
+
+        if changed:
+            self._save_storegate_meta(data_id, meta)
+
+    def _ordered_var_names(self, data_id: str, phase: str) -> list[str]:
+        current_names = set(self._db[data_id][phase].array_keys())
+        if not current_names:
+            return []
+
+        meta = self._load_storegate_meta(data_id)
+        ordered_names = [
+            name for name in meta['var_names'].get(phase, [])
+            if name in current_names
+        ]
+        extras = sorted(current_names - set(ordered_names))
+        return ordered_names + extras
+
+    def _append_var_name(self, data_id: str, phase: str, var_name: str) -> None:
+        meta = self._load_storegate_meta(data_id)
+        if var_name in meta['var_names'][phase]:
+            return
+        meta['var_names'][phase].append(var_name)
+        self._save_storegate_meta(data_id, meta)
+
+    def _remove_var_name(self, data_id: str, phase: str, var_name: str) -> None:
+        meta = self._load_storegate_meta(data_id)
+        if var_name not in meta['var_names'][phase]:
+            return
+        meta['var_names'][phase] = [
+            name for name in meta['var_names'][phase]
+            if name != var_name
+        ]
+        self._save_storegate_meta(data_id, meta)
+
+    def _rename_var_name(
+        self,
+        data_id: str,
+        phase: str,
+        var_name: str,
+        output_var_name: str,
+    ) -> None:
+        meta = self._load_storegate_meta(data_id)
+        renamed: list[str] = []
+        replaced = False
+
+        for name in meta['var_names'][phase]:
+            if name == var_name:
+                renamed.append(output_var_name)
+                replaced = True
+            elif name != output_var_name:
+                renamed.append(name)
+
+        if not replaced:
+            renamed.append(output_var_name)
+
+        meta['var_names'][phase] = renamed
+        self._save_storegate_meta(data_id, meta)
+
+    @staticmethod
+    def _event_chunk_size(arr: Any) -> int:
+        chunks = getattr(arr, 'chunks', None)
+        if isinstance(chunks, tuple) and chunks and chunks[0] is not None:
+            return max(1, int(chunks[0]))
+        return max(1, int(arr.shape[0]))
 
     def add_data(self, data_id: str, var_name: str, data: np.ndarray, phase: str) -> None:
         db = self._db[data_id][phase]
+        is_new_var = var_name not in db.array_keys()
 
-        if var_name in db.array_keys():
+        if not is_new_var:
             existing_shape = db[var_name].shape[1:]
             if data.shape[1:] != existing_shape:
                 raise ValueError(
@@ -60,6 +166,9 @@ class ZarrDatabase(Database):
             chunks = (self._chunk, ) + tuple(shape[1:])
             db.create_array(name=var_name, data=data, chunks=chunks)
 
+        if is_new_var:
+            self._append_var_name(data_id, phase, var_name)
+
     def update_data(self, data_id: str, var_name: str, data: np.ndarray, phase: str, index: int | slice | None) -> None:
         arr = self._db[data_id][phase][var_name]
         data = self._prepare_update_data(
@@ -80,6 +189,40 @@ class ZarrDatabase(Database):
         if var_name not in self._db[data_id][phase].array_keys():
             raise KeyError(f'"{var_name}" not found in {phase} phase.')
         del self._db[data_id][phase][var_name]
+        self._remove_var_name(data_id, phase, var_name)
+
+    def rename_data(
+        self,
+        data_id: str,
+        var_name: str,
+        output_var_name: str,
+        phase: str,
+    ) -> None:
+        db = self._db[data_id][phase]
+        if var_name not in db.array_keys():
+            raise KeyError(f'"{var_name}" not found in {phase} phase.')
+        if var_name == output_var_name:
+            return
+        if output_var_name in db.array_keys():
+            raise ValueError(f'"{output_var_name}" already exists in {phase} phase.')
+
+        arr = db[var_name]
+        chunk_size = self._event_chunk_size(arr)
+
+        try:
+            if arr.shape[0] == 0:
+                self.add_data(data_id, output_var_name, arr[0:0], phase)
+            else:
+                for start in range(0, arr.shape[0], chunk_size):
+                    stop = min(start + chunk_size, arr.shape[0])
+                    self.add_data(data_id, output_var_name, arr[start:stop], phase)
+        except Exception:
+            if output_var_name in db.array_keys():
+                self.delete_data(data_id, output_var_name, phase)
+            raise
+
+        del db[var_name]
+        self._rename_var_name(data_id, phase, var_name, output_var_name)
 
     def get_metadata(self, data_id: str, phase: str) -> dict[str, Any]:
         results: dict[str, Any] = {}
@@ -88,7 +231,7 @@ class ZarrDatabase(Database):
 
         db = self._db[data_id][phase]
 
-        for var_name in db.array_keys():
+        for var_name in self._ordered_var_names(data_id, phase):
             arr = db[var_name]
             results[var_name] = {
                 'backend': 'zarr',
@@ -100,15 +243,13 @@ class ZarrDatabase(Database):
 
     def load_meta_attrs(self, data_id: str) -> dict[str, Any]:
         """Load persisted metadata from the attrs of the data_id group."""
-        if data_id not in self._db.group_keys():
-            return {}
-        return dict(self._db[data_id].attrs.get('_storegate_meta', {}))
+        return self._load_storegate_meta(data_id)
 
     def save_meta_attrs(self, data_id: str, meta: dict[str, Any]) -> None:
         """Persist metadata to the attrs of the data_id group. No-op in read-only mode."""
-        if self._mode == 'r':
-            return
-        self._db[data_id].attrs['_storegate_meta'] = meta
+        saved_meta = self._load_storegate_meta(data_id)
+        saved_meta.update(meta)
+        self._save_storegate_meta(data_id, saved_meta)
 
     def close(self) -> None:
         self._db.store.close()

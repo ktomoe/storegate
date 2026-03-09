@@ -348,6 +348,37 @@ def test_delete_data_all_phases(sg_id, phases):
         assert 'x' not in sg_id.get_var_names(phase)
 
 
+def test_rename_data_preserves_data_order_and_compiled_state(sg_id):
+    x = np.array([[1.0], [2.0]])
+    y = np.array([[3.0], [4.0]])
+    sg_id.add_data('x', x, phase='train')
+    sg_id.add_data('y', y, phase='train')
+    sg_id.compile()
+
+    sg_id.rename_data('x', 'z', phase='train')
+
+    assert sg_id.get_var_names('train') == ['z', 'y']
+    np.testing.assert_array_equal(sg_id.get_data('z', 'train', None), x)
+    assert len(sg_id['train']) == 2
+
+
+def test_rename_data_numpy_backend(tmp_path):
+    sg = StoreGate(output_dir=str(tmp_path), mode='w', data_id=DATA_ID)
+    sg.set_backend('numpy')
+    sg.add_data('x', np.array([[1.0], [2.0]]), phase='train')
+    sg.add_data('y', np.array([[3.0], [4.0]]), phase='train')
+    sg.compile()
+
+    sg.rename_data('x', 'z', phase='train')
+
+    assert sg.get_var_names('train') == ['z', 'y']
+    np.testing.assert_array_equal(
+        sg.get_data('z', 'train', None),
+        np.array([[1.0], [2.0]]),
+    )
+    assert len(sg['train']) == 2
+
+
 @pytest.mark.parametrize(
     ('seed_names', 'expected_names'),
     [
@@ -360,6 +391,15 @@ def test_get_var_names(sg_id, seed_names, expected_names):
         _seed_var(sg_id, 'train', var_name=name, data=np.array([[float(index)]]))
 
     assert tuple(sg_id.get_var_names('train')) == expected_names
+
+
+def test_get_var_names_preserves_registration_order_after_reopen(tmp_path):
+    sg = StoreGate(output_dir=str(tmp_path), mode='w', data_id=DATA_ID)
+    sg.add_data('x', np.array([[1.0]]), phase='train')
+    sg.add_data('y', np.array([[2.0]]), phase='train')
+
+    reopened = StoreGate(output_dir=str(tmp_path), mode='r', data_id=DATA_ID)
+    assert reopened.get_var_names('train') == ['x', 'y']
 
 
 # ---------------------------------------------------------------------------

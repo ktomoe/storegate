@@ -52,17 +52,42 @@ class PytorchTask(DLTask):
             phase,
         )
 
-    def _clear_existing_test_outputs(self, output_var_names: list[str] | None) -> None:
+    @staticmethod
+    def _tmp_test_output_var_names(
+        output_var_names: list[str] | None,
+    ) -> list[str] | None:
         if output_var_names is None:
-            return
+            return None
+        return [f'tmp_{var_name}' for var_name in output_var_names]
+
+    def _delete_test_outputs(self, output_var_names: list[str] | None) -> bool:
+        if output_var_names is None:
+            return False
         existing_var_names = set(self._storegate.get_var_names('test'))
         deleted = False
         for var_name in output_var_names:
             if var_name in existing_var_names:
                 self._storegate.delete_data(var_name, 'test')
                 deleted = True
-        if deleted:
-            self._storegate.compile()
+        return deleted
+
+    def _promote_tmp_test_outputs(
+        self,
+        tmp_output_var_names: list[str],
+        output_var_names: list[str],
+    ) -> None:
+        existing_var_names = set(self._storegate.get_var_names('test'))
+        for output_var_name in output_var_names:
+            if output_var_name in existing_var_names:
+                self._storegate.delete_data(output_var_name, 'test')
+
+        for tmp_output_var_name, output_var_name in zip(
+            tmp_output_var_names,
+            output_var_names,
+        ):
+            self._storegate.rename_data(tmp_output_var_name, output_var_name, 'test')
+
+        self._storegate.compile()
 
     def compile(self) -> None:
         """Compile pytorch ml objects."""
@@ -163,7 +188,10 @@ class PytorchTask(DLTask):
     def predict(self) -> dict[str, Any]:
         """Predict and upload outputs to storegate."""
         output_var_names = self._phase_var_names('_output_var_names', 'test')
-        self._clear_existing_test_outputs(output_var_names)
+        tmp_output_var_names = self._tmp_test_output_var_names(output_var_names)
+
+        if self._delete_test_outputs(tmp_output_var_names):
+            self._storegate.compile()
 
         if not self._storegate.get_var_names('test'):
             logger.warn("predict() skipped: no variables found in the 'test' phase.")
@@ -172,9 +200,20 @@ class PytorchTask(DLTask):
         self._ml.model.eval()
         dataloader = self.get_dataloader('test')
 
-        rtn_result = self.step_epoch(0, 'test', dataloader)
-        if output_var_names is not None:
-            self._storegate.compile()
+        if tmp_output_var_names is not None:
+            self._active_test_output_var_names = tmp_output_var_names
+
+        try:
+            rtn_result = self.step_epoch(0, 'test', dataloader)
+            if output_var_names is not None and tmp_output_var_names is not None:
+                self._promote_tmp_test_outputs(tmp_output_var_names, output_var_names)
+        except Exception:
+            if self._delete_test_outputs(tmp_output_var_names):
+                self._storegate.compile()
+            raise
+        finally:
+            if hasattr(self, '_active_test_output_var_names'):
+                del self._active_test_output_var_names
 
         return {'test': rtn_result}
 
@@ -302,9 +341,14 @@ class PytorchTask(DLTask):
 
 
     def _output_to_storegate(self, outputs: torch.Tensor | list[torch.Tensor]) -> None:
-        output_var_names = self._get_var_names_for_phase(
-            cast(_CompiledVarNames, self._output_var_names), 'test'
+        output_var_names = cast(
+            list[str] | None,
+            getattr(self, '_active_test_output_var_names', None),
         )
+        if output_var_names is None:
+            output_var_names = self._get_var_names_for_phase(
+                cast(_CompiledVarNames, self._output_var_names), 'test'
+            )
         if output_var_names is None:
             return
 

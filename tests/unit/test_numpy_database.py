@@ -251,6 +251,20 @@ def test_delete_data_not_found_raises(db):
         db.delete_data(DATA_ID, 'nonexistent', 'train')
 
 
+def test_rename_data_preserves_data_and_order(db):
+    x = np.array([[1.0], [2.0]])
+    y = np.array([[3.0], [4.0]])
+    db.add_data(DATA_ID, 'x', x, 'train')
+    db.add_data(DATA_ID, 'y', y, 'train')
+
+    db.rename_data(DATA_ID, 'x', 'z', 'train')
+
+    metadata = db.get_metadata(DATA_ID, 'train')
+    assert list(metadata) == ['z', 'y']
+    assert 'x' not in metadata
+    np.testing.assert_array_equal(db.get_data(DATA_ID, 'z', 'train', None), x)
+
+
 def test_get_metadata_returns_correct_structure(db):
     data = np.array([[1.0, 2.0], [3.0, 4.0]])
     db.add_data(DATA_ID, 'x', data, 'train')

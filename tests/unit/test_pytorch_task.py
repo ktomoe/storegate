@@ -419,9 +419,13 @@ def test_predict_skips_when_test_phase_empty() -> None:
     task.step_epoch.assert_not_called()
 
 
-def test_predict_deletes_existing_outputs_before_running() -> None:
+def test_predict_replaces_existing_outputs_after_running() -> None:
     task = make_loop_task(output_var_names={'train': ['ignored'], 'test': 'pred'})
-    task._storegate.get_var_names.side_effect = [['pred', 'x'], ['x']]
+    task._storegate.get_var_names.side_effect = [
+        ['pred', 'x'],
+        ['pred', 'x'],
+        ['pred', 'x', 'tmp_pred'],
+    ]
     task.get_dataloader.return_value = 'test-loader'
     task.step_epoch.return_value = {'acc': 0.9}
 
@@ -429,7 +433,8 @@ def test_predict_deletes_existing_outputs_before_running() -> None:
 
     assert result == {'test': {'acc': 0.9}}
     task._storegate.delete_data.assert_called_once_with('pred', 'test')
-    assert task._storegate.compile.call_count == 2
+    task._storegate.rename_data.assert_called_once_with('tmp_pred', 'pred', 'test')
+    task._storegate.compile.assert_called_once()
     task._ml.model.eval.assert_called_once()
     task.get_dataloader.assert_called_once_with('test')
     task.step_epoch.assert_called_once_with(0, 'test', 'test-loader')
@@ -437,7 +442,11 @@ def test_predict_deletes_existing_outputs_before_running() -> None:
 
 def test_predict_recompiles_after_writing_new_outputs() -> None:
     task = make_loop_task(output_var_names={'test': 'pred'})
-    task._storegate.get_var_names.return_value = ['x']
+    task._storegate.get_var_names.side_effect = [
+        ['x'],
+        ['x'],
+        ['x', 'tmp_pred'],
+    ]
     task.get_dataloader.return_value = 'test-loader'
     task.step_epoch.return_value = {'acc': 0.9}
 
@@ -445,6 +454,7 @@ def test_predict_recompiles_after_writing_new_outputs() -> None:
 
     assert result == {'test': {'acc': 0.9}}
     task._storegate.delete_data.assert_not_called()
+    task._storegate.rename_data.assert_called_once_with('tmp_pred', 'pred', 'test')
     task._storegate.compile.assert_called_once()
     task._ml.model.eval.assert_called_once()
     task.get_dataloader.assert_called_once_with('test')
@@ -461,7 +471,7 @@ def test_predict_restores_storegate_compiled_state_after_writing_outputs(tmp_pat
 
     def write_predictions(epoch: int, phase: str, dataloader: object) -> dict[str, float]:
         assert (epoch, phase, dataloader) == (0, 'test', 'test-loader')
-        sg.add_data('pred', np.ones((4, 1), dtype=np.float32), phase='test')
+        sg.add_data('tmp_pred', np.ones((4, 1), dtype=np.float32), phase='test')
         return {'acc': 1.0}
 
     task.step_epoch.side_effect = write_predictions
@@ -474,6 +484,34 @@ def test_predict_restores_storegate_compiled_state_after_writing_outputs(tmp_pat
         sg.get_data('pred', 'test'),
         np.ones((4, 1), dtype=np.float32),
     )
+    assert 'tmp_pred' not in sg.get_var_names('test')
+
+
+def test_predict_failure_preserves_existing_outputs_and_restores_compiled_state(tmp_path) -> None:
+    sg = StoreGate(output_dir=str(tmp_path), mode='w', data_id='exp')
+    sg.add_data('x', np.arange(8, dtype=np.float32).reshape(4, 2), phase='test')
+    sg.add_data('pred', np.zeros((4, 1), dtype=np.float32), phase='test')
+    sg.compile()
+
+    task = make_loop_task(output_var_names={'test': 'pred'}, storegate=sg)
+    task.get_dataloader.return_value = 'test-loader'
+
+    def fail_predictions(epoch: int, phase: str, dataloader: object) -> dict[str, float]:
+        assert (epoch, phase, dataloader) == (0, 'test', 'test-loader')
+        sg.add_data('tmp_pred', np.ones((2, 1), dtype=np.float32), phase='test')
+        raise RuntimeError('boom')
+
+    task.step_epoch.side_effect = fail_predictions
+
+    with pytest.raises(RuntimeError, match='boom'):
+        task.predict()
+
+    np.testing.assert_array_equal(
+        sg.get_data('pred', 'test'),
+        np.zeros((4, 1), dtype=np.float32),
+    )
+    assert 'tmp_pred' not in sg.get_var_names('test')
+    assert len(sg['test']) == 4
 
 
 def test_predict_preserves_test_output_order_even_when_shuffle_requested(tmp_path) -> None:
