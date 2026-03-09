@@ -265,6 +265,16 @@ class DLTask(AgentTask):
 
         return errors
 
+    @staticmethod
+    def _duplicate_var_names(var_names: list[str]) -> list[str]:
+        seen: set[str] = set()
+        duplicates: list[str] = []
+        for var_name in var_names:
+            if var_name in seen and var_name not in duplicates:
+                duplicates.append(var_name)
+            seen.add(var_name)
+        return duplicates
+
     def _validate_output_var_names_do_not_overlap(self) -> None:
         errors: list[str] = []
 
@@ -276,9 +286,14 @@ class DLTask(AgentTask):
             if output_var_names is None:
                 continue
 
+            duplicate_output_var_names = self._duplicate_var_names(output_var_names)
             input_overlap = sorted(set(output_var_names) & set(input_var_names))
             true_overlap = sorted(set(output_var_names) & set(true_var_names))
 
+            if duplicate_output_var_names:
+                errors.append(
+                    f"  phase='{phase}' output_var_names contain duplicates={duplicate_output_var_names}"
+                )
             if input_overlap:
                 errors.append(
                     f"  phase='{phase}' output_var_names overlap with input_var_names={input_overlap}"
@@ -290,6 +305,7 @@ class DLTask(AgentTask):
 
         if errors:
             raise ValueError(
-                'output_var_names must not overlap with input_var_names or true_var_names:\n'
+                'output_var_names must be unique within each phase and must not '
+                'overlap with input_var_names or true_var_names:\n'
                 + '\n'.join(errors)
             )

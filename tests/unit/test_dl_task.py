@@ -416,6 +416,44 @@ def test_compile_var_names_raises_when_output_overlaps_true_in_phase_dict() -> N
         task.compile_var_names()
 
 
+def test_compile_var_names_raises_when_output_contains_duplicates() -> None:
+    task = make_task(
+        storegate=make_sg({
+            'train': ['x', 'y'],
+            'valid': ['x', 'y'],
+            'test': ['x', 'y'],
+        }),
+        input_var_names='x',
+        true_var_names='y',
+        output_var_names=['pred', 'pred'],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"phase='train' output_var_names contain duplicates=\['pred'\]",
+    ):
+        task.compile_var_names()
+
+
+def test_compile_var_names_raises_when_phase_specific_output_contains_duplicates() -> None:
+    task = make_task(
+        storegate=make_sg({
+            'train': ['x_train', 'y_train'],
+            'valid': ['x_valid', 'y_valid'],
+            'test': ['x_test'],
+        }),
+        input_var_names={'train': 'x_train', 'valid': 'x_valid', 'test': 'x_test'},
+        true_var_names={'train': 'y_train', 'valid': 'y_valid', 'test': None},
+        output_var_names={'valid': ['pred', 'pred'], 'test': ['score']},
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"phase='valid' output_var_names contain duplicates=\['pred'\]",
+    ):
+        task.compile_var_names()
+
+
 def test_get_var_names_for_phase_resolves_phase_specific_values() -> None:
     task = make_task(
         storegate=make_sg({

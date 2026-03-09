@@ -134,11 +134,113 @@ class _OutputVarNamesTask:
         pass
 
 
+class _FakePipe:
+    def __init__(
+        self,
+        *,
+        recv_result: dict[str, Any] | None = None,
+        poll_result: bool = False,
+        recv_error: Exception | None = None,
+    ) -> None:
+        self._recv_result = recv_result
+        self._poll_result = poll_result
+        self._recv_error = recv_error
+        self.recv_calls = 0
+        self.closed = False
+
+    def recv(self) -> dict[str, Any]:
+        self.recv_calls += 1
+        if self._recv_error is not None:
+            raise self._recv_error
+        if self._recv_result is None:
+            raise RuntimeError('recv_result must be set when recv() is expected.')
+        return self._recv_result
+
+    def poll(self) -> bool:
+        return self._poll_result
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeProcess:
+    def __init__(self, sentinel: int, exitcode: int = 0) -> None:
+        self.sentinel = sentinel
+        self.exitcode = exitcode
+        self.started = False
+        self.closed = False
+        self.join_calls: list[float | None] = []
+
+    def start(self) -> None:
+        self.started = True
+
+    def is_alive(self) -> bool:
+        return False
+
+    def terminate(self) -> None:
+        pass
+
+    def kill(self) -> None:
+        pass
+
+    def join(self, timeout: float | None = None) -> None:
+        self.join_calls.append(timeout)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeContext:
+    def __init__(
+        self,
+        *,
+        parent_pipe: _FakePipe,
+        child_pipe: _FakePipe,
+        process: _FakeProcess,
+    ) -> None:
+        self._parent_pipe = parent_pipe
+        self._child_pipe = child_pipe
+        self._process = process
+
+    def Pipe(self, duplex: bool = False) -> tuple[_FakePipe, _FakePipe]:
+        assert duplex is False
+        return self._parent_pipe, self._child_pipe
+
+    def Process(self, target: object, args: tuple[object, ...]) -> _FakeProcess:
+        return self._process
+
+
 def _agent(**kwargs: object) -> SearchAgent:
     task = kwargs.pop('task', MagicMock(spec=['set_hps', 'execute', 'finalize']))
     defaults: dict = dict(task=task, hps=None, num_trials=None, cuda_ids=None)
     defaults.update(kwargs)
     return SearchAgent(**defaults)
+
+
+def _execute_pool_jobs_with_fake_worker(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    ready_objects: list[object],
+    parent_pipe: _FakePipe,
+    process: _FakeProcess,
+) -> SearchAgent:
+    child_pipe = _FakePipe()
+    context = _FakeContext(
+        parent_pipe=parent_pipe,
+        child_pipe=child_pipe,
+        process=process,
+    )
+    wait_results = iter([ready_objects])
+
+    monkeypatch.setattr('storegate.agent.search_agent.mp.get_context', lambda _: context)
+    monkeypatch.setattr(
+        'storegate.agent.search_agent.wait',
+        lambda objects, timeout=None: next(wait_results),
+    )
+
+    agent = SearchAgent(task=MagicMock(), hps=None, cuda_ids=[0])
+    agent.execute_pool_jobs([[agent._task, {}, 0, None]])
+    return agent
 
 
 # ---------------------------------------------------------------------------
@@ -1047,6 +1149,75 @@ def test_execute_pool_jobs_without_cuda_ids_raises() -> None:
     agent = SearchAgent(task=MagicMock(), cuda_ids=None)
     with pytest.raises(RuntimeError, match='requires cuda_ids'):
         agent.execute_pool_jobs([])
+
+
+# ---------------------------------------------------------------------------
+# execute_pool_jobs — ready pipe/sentinel de-duplication
+# ---------------------------------------------------------------------------
+
+def test_execute_pool_jobs_pipe_and_sentinel_ready_once_returns_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = {
+        'hps': {'cuda_id': 0},
+        'job_id': 0,
+        'trial_id': None,
+        'result': {'score': 1},
+    }
+    parent_pipe = _FakePipe(recv_result=result, poll_result=True)
+    process = _FakeProcess(sentinel=101, exitcode=0)
+
+    agent = _execute_pool_jobs_with_fake_worker(
+        monkeypatch,
+        ready_objects=[parent_pipe, process.sentinel],
+        parent_pipe=parent_pipe,
+        process=process,
+    )
+
+    assert agent._history == [result]
+    assert parent_pipe.recv_calls == 1
+    assert process.join_calls == [None]
+    assert process.closed is True
+
+
+def test_execute_pool_jobs_worker_crash_records_error_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_pipe = _FakePipe(poll_result=False)
+    process = _FakeProcess(sentinel=102, exitcode=1)
+
+    agent = _execute_pool_jobs_with_fake_worker(
+        monkeypatch,
+        ready_objects=[process.sentinel],
+        parent_pipe=parent_pipe,
+        process=process,
+    )
+
+    assert len(agent._history) == 1
+    assert 'error' in agent._history[0]
+    assert 'ChildProcessError' in agent._history[0]['error']
+    assert 'exit code 1' in agent._history[0]['error']
+    assert parent_pipe.recv_calls == 0
+
+
+def test_execute_pool_jobs_pipe_eof_records_error_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_pipe = _FakePipe(poll_result=True, recv_error=EOFError())
+    process = _FakeProcess(sentinel=103, exitcode=0)
+
+    agent = _execute_pool_jobs_with_fake_worker(
+        monkeypatch,
+        ready_objects=[parent_pipe, process.sentinel],
+        parent_pipe=parent_pipe,
+        process=process,
+    )
+
+    assert len(agent._history) == 1
+    assert 'error' in agent._history[0]
+    assert 'ChildProcessError' in agent._history[0]['error']
+    assert 'exit code 0' in agent._history[0]['error']
+    assert parent_pipe.recv_calls == 1
 
 
 # ---------------------------------------------------------------------------

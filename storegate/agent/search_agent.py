@@ -489,33 +489,25 @@ class SearchAgent(Agent):
                             pbar.update(1)
                         break
 
-                    ready_pipes = [
-                        cast(Connection, ready)
-                        for ready in ready_objects
-                        if ready in running_jobs_by_pipe
-                    ]
-                    ready_sentinels = [
-                        cast(int, ready)
-                        for ready in ready_objects
-                        if ready in running_jobs_by_sentinel
-                    ]
+                    ready_jobs: dict[int, _RunningJob] = {}
+                    pipe_ready_sentinels: set[int] = set()
 
-                    for pipe in ready_pipes:
-                        job = running_jobs_by_pipe.pop(pipe)
-                        running_jobs_by_sentinel.pop(job.process.sentinel, None)
-                        try:
-                            self._history.append(pipe.recv())
-                        except EOFError:
-                            self._history.append(_child_process_error(job))
-                        _close_finished_job(job)
-                        pbar.update(1)
-                        if self._disable_tqdm:
-                            logger.info(f'completed process ({len(self._history)}/{num_jobs})')
+                    # wait() can report the same worker through both its pipe
+                    # and sentinel; collapse those notifications to one job.
+                    for ready in ready_objects:
+                        if ready in running_jobs_by_pipe:
+                            pipe = cast(Connection, ready)
+                            job = running_jobs_by_pipe[pipe]
+                            ready_jobs[job.process.sentinel] = job
+                            pipe_ready_sentinels.add(job.process.sentinel)
+                        elif ready in running_jobs_by_sentinel:
+                            sentinel = cast(int, ready)
+                            ready_jobs[sentinel] = running_jobs_by_sentinel[sentinel]
 
-                    for sentinel in ready_sentinels:
-                        job = running_jobs_by_sentinel.pop(sentinel)
+                    for sentinel, job in ready_jobs.items():
+                        running_jobs_by_sentinel.pop(sentinel, None)
                         running_jobs_by_pipe.pop(job.result_pipe, None)
-                        if job.result_pipe.poll():
+                        if sentinel in pipe_ready_sentinels or job.result_pipe.poll():
                             try:
                                 self._history.append(job.result_pipe.recv())
                             except EOFError:
