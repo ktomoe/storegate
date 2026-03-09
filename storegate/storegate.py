@@ -659,13 +659,45 @@ class StoreGate:
 
 
     def _load_meta(self, data_id: str) -> None:
-        """Restore compiled state and sizes from zarr attrs (zarr backend only)."""
+        """Restore compiled state and sizes from zarr attrs (zarr backend only).
+
+        Saved zarr metadata is treated as advisory. If the underlying zarr arrays
+        were modified outside StoreGate after the last successful compile(), the
+        persisted compiled flag and phase sizes may be stale. In that case we
+        invalidate the restored compiled state so callers are forced to
+        recompile before using ``len()``.
+        """
         saved = self._db.load_meta_attrs(data_id)
         if not saved:
             return
         meta = self._metadata[data_id]
         meta['compiled']['zarr'] = saved.get('compiled', {}).get('zarr', False)
         meta['sizes']['zarr'] = dict(saved.get('sizes', {}).get('zarr', {}))
+
+        if not meta['compiled']['zarr']:
+            return
+
+        try:
+            actual_sizes = self._current_zarr_sizes(data_id)
+        except ValueError:
+            actual_sizes = None
+
+        if actual_sizes != meta['sizes']['zarr']:
+            logger.warn(
+                f"Invalidating stale compiled zarr metadata for data_id='{data_id}'. "
+                'Call compile() again before using len().'
+            )
+            meta['compiled']['zarr'] = False
+            meta['sizes']['zarr'] = {}
+            self._save_meta(data_id)
+
+    def _current_zarr_sizes(self, data_id: str) -> dict[str, int | None]:
+        """Return phase sizes derived from the current zarr arrays."""
+        with self.using_backend('zarr'):
+            return {
+                phase: self._phase_total_events(self._db.get_metadata(data_id, phase), phase)
+                for phase in const.PHASES
+            }
 
     def _save_meta(self, data_id: str) -> None:
         """Persist compiled state and sizes to zarr attrs (zarr backend only)."""

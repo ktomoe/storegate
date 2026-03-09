@@ -297,13 +297,28 @@ class PytorchTask(DLTask):
 
 
     def step_model(self, inputs: torch.Tensor | list[torch.Tensor]) -> torch.Tensor:
-        """Process model."""
+        """Process model.
+
+        Note:
+            For multi-input data, StoreGate passes ``inputs`` as
+            ``list[torch.Tensor]``. The default implementation forwards that list
+            unchanged as ``model(inputs)``. Override this method if your model
+            expects positional arguments such as ``model(x0, x1)`` instead.
+        """
         outputs: torch.Tensor = self._ml.model(inputs)
         return outputs
 
 
     def step_loss(self, outputs: torch.Tensor, labels: torch.Tensor) -> dict[str, Any]:
-        """Process loss function."""
+        """Process loss function.
+
+        Note:
+            For multi-output or multi-label data, StoreGate may pass list-based
+            containers through the execution path. The default implementation
+            calls ``loss(outputs, labels)`` unchanged, so override this method or
+            wrap the loss function if it needs positional arguments or per-head
+            aggregation.
+        """
         loss_result: dict[str, Any] = {'loss': 0, 'subloss': []}
         loss_result['loss'] += self._ml.loss(outputs, labels)
         return loss_result

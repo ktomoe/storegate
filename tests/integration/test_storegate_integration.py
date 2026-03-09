@@ -1,6 +1,7 @@
 """Integration tests for StoreGate end-to-end workflows."""
 import numpy as np
 import pytest
+import zarr
 
 from storegate import StoreGate
 
@@ -308,6 +309,24 @@ def test_metadata_not_present_requires_compile(tmp_path):
 
     with pytest.raises(ValueError, match='compile'):
         len(sg2['train'])
+
+
+def test_stale_metadata_invalidated_after_external_zarr_mutation(tmp_path):
+    """Reopen must distrust persisted compiled metadata if zarr data changed externally."""
+    sg = _make_store(tmp_path)
+    sg.add_data('x', np.array([[1.0], [2.0]], dtype=np.float32), phase='train')
+    sg.compile()
+
+    root = zarr.open(str(tmp_path), mode='a')
+    root[DATA_ID]['train']['x'].append(np.array([[3.0]], dtype=np.float32))
+
+    sg2 = _reopen_store(tmp_path)
+
+    with pytest.raises(ValueError, match='compile'):
+        len(sg2['train'])
+    assert sg2.get_data('x', 'train', None).shape[0] == 3
+    assert sg2._metadata[DATA_ID]['compiled']['zarr'] is False
+    assert sg2._metadata[DATA_ID]['sizes']['zarr'] == {}
 
 
 def test_metadata_compiled_false_does_not_persist(tmp_path):

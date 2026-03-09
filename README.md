@@ -127,6 +127,17 @@ task = MyTask(
 task.execute()  # runs fit() then predict(), writes outputs to storegate
 ```
 
+When `input_var_names`, `true_var_names`, or `output_var_names` contain multiple
+variables for a phase, `StoreGateDataset` returns them as `list[Tensor]`.
+The default `PytorchTask` execution path passes those lists through as-is:
+
+- the model receives `list[Tensor]` as `inputs`
+- the loss function receives `outputs` / `labels` in the same container shape
+
+If your model uses a signature such as `forward(x0, x1)` or your loss expects
+separate positional arguments, override `step_model()` and/or `step_loss()`, or
+wrap the model/loss so they accept the list-based inputs used by StoreGate.
+
 ---
 
 ## Hyperparameter Search
