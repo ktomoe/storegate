@@ -225,11 +225,26 @@ def test_compile_model_builds_model_and_applies_optional_features(monkeypatch) -
         with patch('storegate.task.pytorch_task.torch.compile', return_value='compiled-model') as torch_compile:
             task.compile_model()
 
-    build_module.assert_called_once_with(task._model, task._model_args, None)
+    build_module.assert_called_once_with(task._model, task._model_args, torch.nn)
     fake_model.to.assert_called_once_with(task._device)
     summary.assert_called_once_with(fake_model)
     torch_compile.assert_called_once_with(fake_model)
     assert task._ml.model == 'compiled-model'
+
+
+def test_compile_model_supports_string_model_names_from_torch_nn() -> None:
+    task = make_runtime_task(
+        model='Linear',
+        model_args={'in_features': 2, 'out_features': 1},
+        optimizer=None,
+        loss=torch.nn.MSELoss,
+    )
+
+    task.compile_model()
+
+    assert isinstance(task._ml.model, torch.nn.Linear)
+    assert task._ml.model.in_features == 2
+    assert task._ml.model.out_features == 1
 
 
 def test_compile_optimizer_skips_when_optimizer_missing() -> None:
@@ -462,6 +477,22 @@ def test_fit_ignores_valid_phase_when_only_unrelated_storegate_vars_exist() -> N
 
     assert result == {'train': [{'loss': 0.1}]}
     assert task.get_dataloader.call_args_list == [call('train')]
+    task._ml.model.eval.assert_not_called()
+
+
+def test_fit_with_zero_epochs_skips_train_and_valid_dataloaders() -> None:
+    task = make_loop_task(
+        input_var_names={'train': 'x_train', 'valid': 'x_valid', 'test': 'x_test'},
+        true_var_names={'train': 'y_train', 'valid': 'y_valid', 'test': None},
+        num_epochs=0,
+    )
+
+    result = task.fit()
+
+    assert result == {}
+    task.get_dataloader.assert_not_called()
+    task.step_epoch.assert_not_called()
+    task._ml.model.train.assert_not_called()
     task._ml.model.eval.assert_not_called()
 
 

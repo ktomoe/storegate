@@ -1,5 +1,6 @@
 """Unit tests for StoreGate class."""
 import logging
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -169,6 +170,18 @@ def test_set_data_id_twice_does_not_reset_metadata(sg):
     sg.set_data_id(DATA_ID)  # second call
     # metadata should still exist
     assert DATA_ID in sg._metadata
+
+
+def test_set_data_id_rolls_back_on_initialize_failure(sg):
+    sg.set_data_id(DATA_ID)
+
+    with patch.object(sg._db, 'initialize', side_effect=RuntimeError('boom')):
+        with pytest.raises(RuntimeError, match='boom'):
+            sg.set_data_id('other_data')
+
+    assert sg.data_id == DATA_ID
+    assert DATA_ID in sg._metadata
+    assert 'other_data' not in sg._metadata
 
 
 def test_repr_no_data_id(sg):

@@ -192,7 +192,7 @@ class PytorchTask(DLTask):
         if self._is_gpu and (not torch.cuda.is_available()):
             raise ValueError(f'{self._device} is not available')
 
-        self._ml.model = util.build_module(self._model, self._model_args, None)
+        self._ml.model = util.build_module(self._model, self._model_args, torch.nn)
         self._ml.model.to(self._device)
 
         if self._torchinfo:
@@ -258,6 +258,9 @@ class PytorchTask(DLTask):
 
     def fit(self) -> dict[str, Any]:
         """Train model over epoch."""
+        if self._num_epochs == 0:
+            return {}
+
         phases = ['train', *(['valid'] if self._phase_has_supervised_data('valid') else [])]
         dataloaders: dict[str, DataLoader] = {phase: self.get_dataloader(phase) for phase in phases}  # type: ignore[type-arg]
         rtn_history: dict[str, list[dict[str, Any]]] = {phase: [] for phase in phases}

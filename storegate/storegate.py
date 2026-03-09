@@ -353,16 +353,25 @@ class StoreGate:
             been added since the last ``compile()``.
         """
         _validate_data_id(data_id)
-        self._data_id = data_id
-        self._db.initialize(data_id)
+        previous_data_id = self._data_id
+        has_metadata = data_id in self._metadata
 
-        if data_id in self._metadata:
-            return
-        self._metadata[data_id] = {
-            'compiled': {backend: False for backend in _SUPPORTED_BACKENDS},
-            'sizes': {backend: {} for backend in _SUPPORTED_BACKENDS},
-        }
-        self._load_meta(data_id)
+        if not has_metadata:
+            self._metadata[data_id] = {
+                'compiled': {backend: False for backend in _SUPPORTED_BACKENDS},
+                'sizes': {backend: {} for backend in _SUPPORTED_BACKENDS},
+            }
+
+        try:
+            self._db.initialize(data_id)
+            self._data_id = data_id
+            if not has_metadata:
+                self._load_meta(data_id)
+        except Exception:
+            self._data_id = previous_data_id
+            if not has_metadata:
+                del self._metadata[data_id]
+            raise
 
 
     @require_data_id
