@@ -344,6 +344,51 @@ def test_get_dataloader_builds_loader_for_phase(
         assert kwargs[key] == value
 
 
+def test_get_dataloader_with_sampler_does_not_inject_shuffle() -> None:
+    sampler = torch.utils.data.SequentialSampler(range(8))
+    task = make_runtime_task(
+        dataloader_args={'sampler': sampler},
+        batch_size=16,
+    )
+    fake_dataset = object()
+
+    with patch('storegate.task.pytorch_task.StoreGateDataset', return_value=fake_dataset):
+        with patch('storegate.task.pytorch_task.DataLoader', return_value='loader') as dataloader_cls:
+            loader = task.get_dataloader('train')
+
+    assert loader == 'loader'
+    kwargs = dataloader_cls.call_args.kwargs
+    assert kwargs['dataset'] is fake_dataset
+    assert kwargs['sampler'] is sampler
+    assert kwargs['batch_size'] == 16
+    assert 'shuffle' not in kwargs
+
+
+def test_get_dataloader_with_batch_sampler_does_not_inject_batch_size_or_shuffle() -> None:
+    batch_sampler = torch.utils.data.BatchSampler(
+        torch.utils.data.SequentialSampler(range(8)),
+        batch_size=2,
+        drop_last=False,
+    )
+    task = make_runtime_task(
+        dataloader_args={'batch_sampler': batch_sampler},
+        batch_size=16,
+    )
+    fake_dataset = object()
+
+    with patch('storegate.task.pytorch_task.StoreGateDataset', return_value=fake_dataset):
+        with patch('storegate.task.pytorch_task.DataLoader', return_value='loader') as dataloader_cls:
+            loader = task.get_dataloader('train')
+
+    assert loader == 'loader'
+    kwargs = dataloader_cls.call_args.kwargs
+    assert kwargs['dataset'] is fake_dataset
+    assert kwargs['batch_sampler'] is batch_sampler
+    assert 'batch_size' not in kwargs
+    assert 'shuffle' not in kwargs
+    assert 'sampler' not in kwargs
+
+
 def test_fit_without_valid_returns_train_history_only() -> None:
     task = make_loop_task(
         input_var_names={'train': 'x', 'valid': None, 'test': 'x_test'},

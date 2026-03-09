@@ -235,16 +235,21 @@ class PytorchTask(DLTask):
                                    **dataset_kwargs)
 
         dataloader_args: dict[str, Any] = {'dataset': dataset, **(self._dataloader_args or {})}
+        has_batch_sampler = 'batch_sampler' in dataloader_args
+        has_sampler = 'sampler' in dataloader_args
+
+        if not has_batch_sampler:
+            dataloader_args['batch_size'] = self._batch_size
 
         # Prediction writes outputs back to StoreGate in dataloader order,
         # so the test phase must keep the original sample order.
-        dataloader_args['shuffle'] = (
-            False if phase == 'test'
-            else dataloader_args.get('shuffle', phase == 'train')
-        )
+        if not has_sampler and not has_batch_sampler:
+            dataloader_args['shuffle'] = (
+                False if phase == 'test'
+                else dataloader_args.get('shuffle', phase == 'train')
+            )
 
-        return DataLoader(batch_size=self._batch_size,
-                          **dataloader_args)
+        return DataLoader(**dataloader_args)
 
     def _phase_has_supervised_data(self, phase: str) -> bool:
         return bool(self._phase_var_names('_input_var_names', phase)) and bool(

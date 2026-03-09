@@ -1,5 +1,6 @@
 import copy
 import json
+import math
 import multiprocessing as mp
 import signal
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from multiprocessing.connection import Connection, wait
 from pathlib import Path
 from typing import Any, cast
 
+import numpy as np
 from tqdm import tqdm  # type: ignore[import-untyped]
 
 from storegate import logger
@@ -344,10 +346,78 @@ class SearchAgent(Agent):
     def finalize(self) -> None:
         self._history.sort(key=lambda r: (r['job_id'], r.get('trial_id') or 0))
         if self._json_dump is not None:
+            normalized_history = self._json_safe(self._history)
             self._json_dump.write_text(
-                json.dumps(self._history, ensure_ascii=False, indent=2),
+                json.dumps(
+                    normalized_history,
+                    ensure_ascii=False,
+                    indent=2,
+                    allow_nan=False,
+                ),
                 encoding='utf-8',
             )
+
+    @classmethod
+    def _json_safe_key(cls, key: Any) -> str:
+        """Normalize mapping keys to JSON object keys."""
+        return str(cls._json_safe(key))
+
+    @classmethod
+    def _json_safe(cls, value: Any) -> Any:
+        """Recursively normalize task results / HPs into JSON-safe primitives."""
+        if value is None or isinstance(value, (str, bool, int)):
+            return value
+
+        if isinstance(value, float):
+            return value if math.isfinite(value) else repr(value)
+
+        if isinstance(value, Path):
+            return str(value)
+
+        if isinstance(value, bytes):
+            return value.decode('utf-8', errors='replace')
+
+        if isinstance(value, dict):
+            return {
+                cls._json_safe_key(key): cls._json_safe(item)
+                for key, item in value.items()
+            }
+
+        if isinstance(value, (list, tuple, set)):
+            return [cls._json_safe(item) for item in value]
+
+        if isinstance(value, np.generic):
+            return cls._json_safe(value.item())
+
+        if isinstance(value, np.ndarray):
+            return cls._json_safe(value.tolist())
+
+        qualname = getattr(value, '__qualname__', None)
+        module = getattr(value, '__module__', None)
+        if isinstance(module, str) and isinstance(qualname, str):
+            return f'{module}.{qualname}'
+
+        # Optional torch dependency: handle Tensor-like objects by duck typing.
+        if hasattr(value, 'detach') and callable(value.detach):
+            detached = value.detach()
+            if hasattr(detached, 'cpu') and callable(detached.cpu):
+                detached = detached.cpu()
+            if hasattr(detached, 'tolist') and callable(detached.tolist):
+                return cls._json_safe(detached.tolist())
+
+        if hasattr(value, 'tolist') and callable(value.tolist):
+            try:
+                return cls._json_safe(value.tolist())
+            except TypeError:
+                pass
+
+        if hasattr(value, 'item') and callable(value.item):
+            try:
+                return cls._json_safe(value.item())
+            except (TypeError, ValueError):
+                pass
+
+        return repr(value)
 
     @contextmanager
     def _serial_job_timeout(self, enabled: bool) -> Any:

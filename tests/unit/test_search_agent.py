@@ -5,7 +5,10 @@ import json
 import random
 import signal
 import time
+from pathlib import Path
 from typing import Any
+
+import numpy as np
 import pytest
 from unittest.mock import MagicMock
 
@@ -595,6 +598,60 @@ def test_finalize_json_is_valid_and_indented(tmp_path: object) -> None:
     raw = path.read_text(encoding='utf-8')
     json.loads(raw)  # must be valid JSON
     assert '\n' in raw  # indent=2 means multi-line
+
+
+def test_finalize_json_dump_normalizes_numpy_paths_classes_and_nan(tmp_path: object) -> None:
+    path = tmp_path / 'out.json'
+    artifact_path = Path(tmp_path / 'artifact.bin')
+    agent = SearchAgent(task=MagicMock(), json_dump=str(path))
+    agent._history = [{
+        'job_id': np.int64(0),
+        'trial_id': None,
+        'hps': {
+            'lr': np.float32(0.5),
+            'model': dict,
+            'artifact': artifact_path,
+        },
+        'result': {
+            'scores': np.array([1.0, np.nan], dtype=np.float32),
+            'loss': np.float64(1.25),
+        },
+    }]
+
+    agent.finalize()
+
+    data = json.loads(path.read_text(encoding='utf-8'))
+    assert data == [{
+        'job_id': 0,
+        'trial_id': None,
+        'hps': {
+            'lr': 0.5,
+            'model': 'builtins.dict',
+            'artifact': str(artifact_path),
+        },
+        'result': {
+            'scores': [1.0, 'nan'],
+            'loss': 1.25,
+        },
+    }]
+
+
+def test_finalize_json_dump_normalizes_torch_tensors_when_available(
+    tmp_path: object,
+) -> None:
+    torch = pytest.importorskip('torch')
+    path = tmp_path / 'out.json'
+    agent = SearchAgent(task=MagicMock(), json_dump=str(path))
+    agent._history = [{
+        'job_id': 0,
+        'trial_id': None,
+        'result': {'pred': torch.tensor([[1.0, 2.0]])},
+    }]
+
+    agent.finalize()
+
+    data = json.loads(path.read_text(encoding='utf-8'))
+    assert data[0]['result']['pred'] == [[1.0, 2.0]]
 
 
 # ---------------------------------------------------------------------------
