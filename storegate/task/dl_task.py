@@ -111,11 +111,16 @@ class DLTask(AgentTask):
             To persist them to disk, call
             ``storegate.copy_to_storage(var_name, phase='test')``
             after ``execute()`` returns.
+
+            Required input/label variables are validated against the zarr
+            backend before the zarr -> numpy copy starts, so this mode does
+            not depend on the caller's currently selected backend.
         """
 
-        self.compile()
-
         if self._execute_in_memory:
+            with self._storegate.using_backend('zarr'):
+                self.compile()
+
             for phase in const.PHASES:
                 phase_var_names = (
                     (
@@ -144,6 +149,7 @@ class DLTask(AgentTask):
                 rtn_fit = self.fit()
                 rtn_predict = self.predict()
         else:
+            self.compile()
             rtn_fit = self.fit()
             rtn_predict = self.predict()
 

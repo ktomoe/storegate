@@ -657,6 +657,31 @@ def test_execute_in_memory_runs_fit_predict_under_numpy_backend(tmp_path) -> Non
     assert backends_during_fit == ['numpy', 'numpy']
 
 
+def test_execute_in_memory_compiles_against_zarr_when_current_backend_is_numpy(tmp_path) -> None:
+    """execute_in_memory validates required vars on zarr before copying to numpy."""
+    from storegate import StoreGate
+
+    expected = np.arange(6).reshape(3, 2)
+    sg = StoreGate(output_dir=str(tmp_path), mode='w', data_id='test')
+    sg.add_data('x', expected, phase='train')
+    sg.compile()
+
+    # Simulate a caller leaving StoreGate on numpy before execute().
+    sg.set_backend('numpy')
+
+    task = ConcreteDLTask(
+        storegate=sg,
+        input_var_names={'train': 'x', 'valid': None, 'test': None},
+        execute_in_memory=True,
+    )
+
+    task.execute()
+
+    assert sg.get_backend() == 'numpy'
+    assert 'x' in sg.get_var_names('train')
+    np.testing.assert_array_equal(sg.get_data('x', 'train'), expected)
+
+
 def test_execute_in_memory_uses_phase_specific_var_names(tmp_path) -> None:
     from storegate import StoreGate
 
