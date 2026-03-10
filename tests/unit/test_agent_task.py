@@ -18,6 +18,9 @@ class SimpleTask(AgentTask):
         self._lr = lr
         self._epochs = epochs
 
+    def execute(self) -> None:
+        return None
+
 
 def make_sg() -> MagicMock:
     sg = MagicMock()
@@ -31,38 +34,43 @@ def make_sg() -> MagicMock:
 
 def test_init_sets_storegate() -> None:
     sg = make_sg()
-    task = AgentTask(sg)
+    task = SimpleTask(sg)
     assert task._storegate is sg
 
 
 def test_init_data_id_is_none() -> None:
-    task = AgentTask(make_sg())
+    task = SimpleTask(make_sg())
     assert task._data_id is None
 
 
 def test_storegate_property_getter() -> None:
     sg = make_sg()
-    task = AgentTask(sg)
+    task = SimpleTask(sg)
     assert task.storegate is sg
 
 
 def test_storegate_property_setter() -> None:
     sg1, sg2 = make_sg(), make_sg()
-    task = AgentTask(sg1)
+    task = SimpleTask(sg1)
     task.storegate = sg2
     assert task.storegate is sg2
 
 
 # ---------------------------------------------------------------------------
-# execute / finalize (base implementations return None)
+# abstract / finalize contract
 # ---------------------------------------------------------------------------
 
+def test_agent_task_is_abstract() -> None:
+    with pytest.raises(TypeError, match='abstract'):
+        AgentTask(make_sg())
+
+
 def test_execute_returns_none() -> None:
-    assert AgentTask(make_sg()).execute() is None
+    assert SimpleTask(make_sg()).execute() is None
 
 
 def test_finalize_returns_none() -> None:
-    assert AgentTask(make_sg()).finalize() is None
+    assert SimpleTask(make_sg()).finalize() is None
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 import copy
+from abc import abstractmethod
 from collections.abc import Callable, Mapping
 from typing import Any, cast
 
@@ -192,17 +193,25 @@ class DLTask(AgentTask):
         self._validate_required_var_names_exist()
         self._validate_output_var_names_do_not_overlap()
 
+    @abstractmethod
     def compile_model(self) -> None:
-        """Compile model."""
-        pass
+        """Compile model.
+
+        Concrete subclasses must prepare the model here.
+        """
+        raise NotImplementedError
 
     def compile_optimizer(self) -> None:
         """Compile optimizer."""
         pass
 
+    @abstractmethod
     def compile_loss(self) -> None:
-        """Compile loss."""
-        pass
+        """Compile loss.
+
+        Concrete subclasses must prepare the loss here.
+        """
+        raise NotImplementedError
 
     def _compile_var_name_groups(
         self,

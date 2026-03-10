@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from abc import abstractmethod
 from typing import TYPE_CHECKING, Any
 
 from storegate.task import Task
@@ -37,11 +38,13 @@ class AgentTask(Task):
         if self._data_id is not None:
             self._storegate.set_data_id(self._data_id)
 
+    @abstractmethod
     def execute(self) -> Any:
-        """Execute base task.
+        """Execute the task.
 
-        Users implement their algorithms.
+        Concrete subclasses must implement their algorithm here.
         """
+        raise NotImplementedError
 
     def finalize(self) -> None:
         """Finalize base task.

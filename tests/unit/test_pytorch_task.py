@@ -137,6 +137,14 @@ class _PredictOnlyTask(PytorchTask):
         return {}
 
 
+class _ConcreteDLTask(DLTask):
+    def compile_model(self) -> None:
+        return None
+
+    def compile_loss(self) -> None:
+        return None
+
+
 def _internal_tmp_name(index: int = 0, suffix: int | None = None) -> str:
     base = f'__storegate_predict_tmp_{index}'
     if suffix is None:
@@ -1081,14 +1089,7 @@ def test_inputs_size_len_fallback():
 
 def make_dl_task():
     """Return a minimal DLTask with mocked storegate."""
-    task = DLTask.__new__(DLTask)
-    task._storegate = MagicMock()
-    task._data_id = None
-    task._model_args = {}
-    task._optimizer_args = {}
-    task._loss_args = {}
-    task._PROTECTED_KEYS = frozenset({'storegate', 'ml'})
-    return task
+    return _ConcreteDLTask(storegate=MagicMock())
 
 
 @pytest.mark.parametrize(

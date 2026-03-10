@@ -16,7 +16,11 @@ from storegate.task.dl_env import DLEnv
 
 class ConcreteDLTask(DLTask):
     """Minimal concrete subclass for testing."""
-    pass
+    def compile_model(self) -> None:
+        return None
+
+    def compile_loss(self) -> None:
+        return None
 
 
 def make_sg(existing_var_names: dict[str, list[str]] | None = None) -> MagicMock:
@@ -39,6 +43,11 @@ def make_task(**overrides) -> ConcreteDLTask:
     kwargs = dict(storegate=make_sg())
     kwargs.update(overrides)
     return ConcreteDLTask(**kwargs)
+
+
+def test_dl_task_is_abstract() -> None:
+    with pytest.raises(TypeError, match='abstract'):
+        DLTask(storegate=make_sg())
 
 
 # ---------------------------------------------------------------------------
