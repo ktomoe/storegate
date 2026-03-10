@@ -68,11 +68,21 @@ for var_name, data in sg['train'].items():
 
 ### 3. Switch backends
 
-Data can live on disk (zarr) or in memory (numpy). The active backend is switched with a context manager:
+Data can live on disk (zarr) or in memory (numpy). Backend-bound views let you target either backend explicitly without mutating the active backend:
 
 ```python
-sg.set_backend('zarr')    # default: reads/writes from disk
-sg.set_backend('numpy')   # reads/writes from memory
+sg.zarr.add_data('x', x_train, phase='train')      # explicit disk access
+sg.numpy.add_data('x_cache', x_train, phase='train')  # explicit memory access
+
+x_disk = sg.zarr.get_data('x', phase='train')
+x_mem = sg.numpy.get_data('x_cache', phase='train')
+```
+
+You can still temporarily switch the active backend on the root object:
+
+```python
+sg.set_backend('zarr')    # default: root reads/writes from disk
+sg.set_backend('numpy')   # root reads/writes from memory
 
 # Temporarily switch backend
 with sg.using_backend('numpy'):

@@ -23,7 +23,7 @@ class _PhaseAccessor:
     Holds phase context without mutating the parent StoreGate instance.
     """
 
-    def __init__(self, storegate: StoreGate, phase: str) -> None:
+    def __init__(self, storegate: StoreGate | _BackendView, phase: str) -> None:
         self._storegate = storegate
         self._phase = phase
 
@@ -77,7 +77,7 @@ class _AllPhaseAccessor:
         len(sg['test'])                # size of one phase
     """
 
-    def __init__(self, storegate: StoreGate) -> None:
+    def __init__(self, storegate: StoreGate | _BackendView) -> None:
         self._storegate = storegate
 
     def __delitem__(self, item: str) -> None:
@@ -122,7 +122,12 @@ class _VarAccessor:
     Holds phase and var_name context without mutating the parent StoreGate instance.
     """
 
-    def __init__(self, storegate: StoreGate, phase: str, var_name: str) -> None:
+    def __init__(
+        self,
+        storegate: StoreGate | _BackendView,
+        phase: str,
+        var_name: str,
+    ) -> None:
         self._storegate = storegate
         self._phase = phase
         self._var_name = var_name
@@ -195,6 +200,190 @@ def _validate_phase(phase: str, allow_all: bool = False) -> None:
 def _validate_backend(backend: str) -> None:
     if backend not in _SUPPORTED_BACKENDS:
         raise ValueError(f'Unsupported backend: "{backend}". Use "numpy" or "zarr".')
+
+
+class _BackendView:
+    """Backend-bound facade over a StoreGate instance.
+
+    The view exposes the same high-level data APIs as StoreGate, but each
+    backend-sensitive operation runs against a fixed backend without leaving
+    the root StoreGate instance switched after the call returns.
+    """
+
+    def __init__(self, storegate: StoreGate, backend: str) -> None:
+        _validate_backend(backend)
+        self._storegate = storegate
+        self._backend = backend
+
+    @property
+    def _data_id(self) -> str | None:
+        return self._storegate._data_id
+
+    @property
+    def _metadata(self) -> dict[str, Any]:
+        return self._storegate._metadata
+
+    @property
+    def data_id(self) -> str | None:
+        return self._storegate.data_id
+
+    @property
+    def numpy(self) -> _BackendView:
+        return self._storegate.numpy
+
+    @property
+    def zarr(self) -> _BackendView:
+        return self._storegate.zarr
+
+    def _require_current_data_id(self) -> str:
+        return self._storegate._require_current_data_id()
+
+    def _call_with_backend(
+        self,
+        method: Callable[..., Any],
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        with self._storegate.using_backend(self._backend):
+            return method(*args, **kwargs)
+
+    def __repr__(self) -> str:
+        data_id = self.data_id
+        if data_id is None:
+            return f'StoreGateBackendView(data_id=None, backend={self._backend!r})'
+        compiled = self._metadata[data_id]['compiled'][self._backend]
+        return (
+            'StoreGateBackendView('
+            f'data_id={data_id!r}, backend={self._backend!r}, compiled={compiled})'
+        )
+
+    def set_data_id(self, data_id: str) -> None:
+        self._storegate.set_data_id(data_id)
+
+    @require_data_id
+    def get_backend(self) -> str:
+        return self._backend
+
+    @require_data_id
+    def __getitem__(self, item: str) -> _PhaseAccessor | _AllPhaseAccessor:
+        if item in const.PHASES:
+            return _PhaseAccessor(self, item)
+        if item == 'all':
+            return _AllPhaseAccessor(self)
+        raise NotImplementedError(f'item {item} is not supported')
+
+    @require_data_id
+    def add_data(self, var_name: str, data: Any, phase: str) -> None:
+        self._call_with_backend(self._storegate.add_data, var_name, data, phase=phase)
+
+    @require_data_id
+    def add_data_splits(
+        self,
+        var_name: str,
+        *,
+        train: Any = None,
+        valid: Any = None,
+        test: Any = None,
+    ) -> None:
+        self._call_with_backend(
+            self._storegate.add_data_splits,
+            var_name,
+            train=train,
+            valid=valid,
+            test=test,
+        )
+
+    @require_data_id
+    def update_data(
+        self,
+        var_name: str,
+        data: Any,
+        phase: str,
+        index: int | slice | None = None,
+    ) -> None:
+        self._call_with_backend(
+            self._storegate.update_data,
+            var_name,
+            data,
+            phase=phase,
+            index=index,
+        )
+
+    @require_data_id
+    def get_data(
+        self,
+        var_name: str,
+        phase: str,
+        index: int | slice | None = None,
+    ) -> np.ndarray:
+        return self._call_with_backend(
+            self._storegate.get_data,
+            var_name,
+            phase=phase,
+            index=index,
+        )
+
+    @require_data_id
+    def delete_data(self, var_name: str, phase: str) -> None:
+        self._call_with_backend(self._storegate.delete_data, var_name, phase=phase)
+
+    @require_data_id
+    def rename_data(self, var_name: str, output_var_name: str, phase: str) -> None:
+        self._call_with_backend(
+            self._storegate.rename_data,
+            var_name,
+            output_var_name,
+            phase=phase,
+        )
+
+    @require_data_id
+    def get_var_names(self, phase: str) -> list[str]:
+        return self._call_with_backend(self._storegate.get_var_names, phase)
+
+    @require_data_id
+    def copy_to_memory(
+        self,
+        var_name: str,
+        phase: str,
+        output_var_name: str | None = None,
+    ) -> None:
+        self._storegate.copy_to_memory(var_name, phase, output_var_name)
+
+    @require_data_id
+    def copy_to_storage(
+        self,
+        var_name: str,
+        phase: str,
+        output_var_name: str | None = None,
+    ) -> None:
+        self._storegate.copy_to_storage(var_name, phase, output_var_name)
+
+    @require_data_id
+    def snapshot(self, snapshot_name: str) -> None:
+        self._storegate.snapshot(snapshot_name)
+
+    @require_data_id
+    def restore(self, snapshot_name: str) -> None:
+        self._storegate.restore(snapshot_name)
+
+    @require_data_id
+    def compile(self, show_info: bool = False, cross_backend: bool = False) -> None:
+        self._call_with_backend(
+            self._storegate.compile,
+            show_info=show_info,
+            cross_backend=cross_backend,
+        )
+
+    @require_data_id
+    def verify_backend_data(self, phase: str = 'all') -> None:
+        self._storegate.verify_backend_data(phase=phase)
+
+    @require_data_id
+    def show_info(self) -> None:
+        self._call_with_backend(self._storegate.show_info)
+
+    def close(self) -> None:
+        self._storegate.close()
 
 
 def _validate_output_dir(output_dir: str, mode: str) -> None:
@@ -291,6 +480,10 @@ class StoreGate:
         self._db: HybridDatabase = HybridDatabase(output_dir=output_dir, mode=mode, chunk=chunk)
         self._data_id: str | None = None
         self._metadata: dict[str, Any] = {}
+        self._backend_views: dict[str, _BackendView] = {
+            backend: _BackendView(self, backend)
+            for backend in _SUPPORTED_BACKENDS
+        }
 
         if data_id is not None:
             self.set_data_id(data_id)
@@ -358,6 +551,16 @@ class StoreGate:
     def data_id(self) -> str | None:
         """Return the current data_id."""
         return self._data_id
+
+    @property
+    def numpy(self) -> _BackendView:
+        """Return a numpy-backed view without changing the active backend."""
+        return self._backend_views['numpy']
+
+    @property
+    def zarr(self) -> _BackendView:
+        """Return a zarr-backed view without changing the active backend."""
+        return self._backend_views['zarr']
 
     def _require_current_data_id(self) -> str:
         data_id = self._data_id

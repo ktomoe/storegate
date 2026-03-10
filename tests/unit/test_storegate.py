@@ -273,6 +273,50 @@ def test_using_backend_invalid_raises(sg_id):
             pass
 
 
+def test_backend_view_reports_fixed_backend_without_mutating_root(sg_id):
+    assert sg_id.get_backend() == 'zarr'
+    assert sg_id.numpy.get_backend() == 'numpy'
+    assert sg_id.zarr.get_backend() == 'zarr'
+    assert sg_id.get_backend() == 'zarr'
+
+
+def test_backend_view_add_and_get_without_mutating_root(sg_id):
+    data = np.array([[1.0, 2.0], [3.0, 4.0]])
+
+    sg_id.numpy.add_data('x', data, phase='train')
+
+    assert sg_id.get_backend() == 'zarr'
+    assert 'x' not in sg_id.zarr.get_var_names('train')
+    np.testing.assert_array_equal(sg_id.numpy.get_data('x', 'train', None), data)
+
+
+def test_backend_view_bracket_access_uses_fixed_backend(sg_id):
+    data = np.array([[1.0, 2.0], [3.0, 4.0]])
+
+    sg_id.numpy['train']['x'] = data
+
+    assert sg_id.get_backend() == 'zarr'
+    assert 'x' not in sg_id.zarr['train']
+    np.testing.assert_array_equal(sg_id.numpy['train']['x'][0], data[0])
+
+
+def test_backend_view_compile_and_len_are_backend_specific(sg_id):
+    sg_id.zarr.add_data('x', np.array([[1.0], [2.0]]), phase='train')
+    sg_id.numpy.add_data('x', np.array([[3.0]]), phase='train')
+
+    sg_id.zarr.compile()
+    sg_id.numpy.compile()
+
+    assert len(sg_id.zarr['train']) == 2
+    assert len(sg_id.numpy['train']) == 1
+    assert sg_id.get_backend() == 'zarr'
+
+
+def test_backend_view_methods_require_data_id(sg):
+    with pytest.raises(RuntimeError, match='set_data_id'):
+        sg.numpy.add_data('x', np.array([[1.0]]), phase='train')
+
+
 # ---------------------------------------------------------------------------
 # add_data / get_data / update_data / delete_data
 # ---------------------------------------------------------------------------
