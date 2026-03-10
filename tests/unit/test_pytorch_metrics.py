@@ -340,3 +340,75 @@ def test_pbar_metric_multiple_keys() -> None:
     assert result['loss'] == f'{0.5:.2e}'
     assert result['step'] == 3
     assert result['lr'] == [f'{0.01:.2e}']
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap: lr metric filtered when optimizer is None
+# ---------------------------------------------------------------------------
+
+def test_lr_metric_filtered_when_optimizer_none() -> None:
+    ml = MagicMock()
+    ml.optimizer = None
+    em = EpochMetric(['lr'], ml)
+    assert 'lr' not in em.metrics
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap: list-metric accumulation in second+ batch
+# ---------------------------------------------------------------------------
+
+def test_list_metric_accumulates_weighted_average_over_batches() -> None:
+    em = EpochMetric(['acc'], make_ml())
+
+    # First batch: 2 heads, all perfect
+    outputs1 = [
+        torch.tensor([[10.0, 0.0]]),  # predicts class 0
+        torch.tensor([[0.0, 10.0]]),  # predicts class 1
+    ]
+    labels1 = [torch.tensor([0]), torch.tensor([1])]
+    batch1 = {
+        'batch_size': 1,
+        'outputs': outputs1,
+        'labels': labels1,
+        'loss': {'loss': torch.tensor(0.0)},
+    }
+    result1 = em(batch1)
+    assert result1['acc'] == [1.0, 1.0]
+
+    # Second batch: 2 heads, all wrong
+    outputs2 = [
+        torch.tensor([[0.0, 10.0]]),  # predicts class 1
+        torch.tensor([[10.0, 0.0]]),  # predicts class 0
+    ]
+    labels2 = [torch.tensor([0]), torch.tensor([1])]
+    batch2 = {
+        'batch_size': 1,
+        'outputs': outputs2,
+        'labels': labels2,
+        'loss': {'loss': torch.tensor(0.0)},
+    }
+    result2 = em(batch2)
+    # weighted average: (1*1.0 + 1*0.0) / 2 = 0.5 per head
+    assert result2['acc'] == [0.5, 0.5]
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap: _binary_predictions with invalid shape
+# ---------------------------------------------------------------------------
+
+def test_binary_predictions_invalid_shape_raises() -> None:
+    with pytest.raises(ValueError, match='binary acc expects outputs'):
+        EpochMetric._binary_predictions(torch.randn(2, 3))
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap: lr metric raises when optimizer is None at call time
+# ---------------------------------------------------------------------------
+
+def test_lr_metric_raises_when_optimizer_none_at_call_time() -> None:
+    ml = MagicMock()
+    ml.optimizer = None
+    em = EpochMetric([], ml)
+    em.metrics = ['lr']  # bypass init filter to test the runtime guard
+    with pytest.raises(ValueError, match="requires an optimizer"):
+        em(make_batch())

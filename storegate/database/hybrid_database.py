@@ -10,7 +10,14 @@ from storegate.database.numpy_database import NumpyDatabase
 
 
 class HybridDatabase(Database):
-    """Hybrid database that combines zarr (storage) and numpy (memory) backends."""
+    """Hybrid database that combines zarr (storage) and numpy (memory) backends.
+
+    The zarr backend persists data to disk and its metadata survives across
+    sessions.  The numpy backend is purely in-memory: its data and compiled
+    metadata are **not persisted** and will be lost when the instance is
+    closed.  Use ``StoreGate.copy_to_storage()`` to move numpy data to the
+    zarr backend before closing if persistence is needed.
+    """
     def __init__(self, output_dir: str, mode: str = 'r', chunk: int = 1000) -> None:
         self._output_dir = output_dir
         self._chunk = chunk

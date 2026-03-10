@@ -31,6 +31,8 @@ _console_handler.setLevel(logging.DEBUG)
 _console_handler.setFormatter(_fmt)
 _logger.addHandler(_console_handler)
 
+_HEADER_WIDTH = 80
+
 _F = TypeVar('_F', bound=Callable[..., Any])
 
 
@@ -105,7 +107,7 @@ def _header_line(message: str, char: str) -> str:
     """Build a single decorated header line using char as padding."""
     if len(message) % 2 == 1:
         message += ' '
-    pad = max(0, (80 - len(message) - 2) // 2)
+    pad = max(0, (_HEADER_WIDTH - len(message) - 2) // 2)
     if message == '':
         return char * (pad * 2 + 2)
     return char * pad + ' ' + message + ' ' + char * pad
@@ -120,9 +122,9 @@ def header1(message: str, level: Callable[[str], None] | None = None) -> None:
     """
     if level is None:
         level = info
-    level("=" * 80)
+    level("=" * _HEADER_WIDTH)
     header3(message, level)
-    level("=" * 80)
+    level("=" * _HEADER_WIDTH)
 
 
 def header2(message: str, level: Callable[[str], None] | None = None) -> None:

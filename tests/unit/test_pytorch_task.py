@@ -1142,3 +1142,139 @@ def test_get_pbar_description_formats_epoch_and_phase() -> None:
     task = PytorchTask.__new__(PytorchTask)
     task._num_epochs = 12
     assert task._get_pbar_description(3, 'train') == 'Epoch [   3/12] train'
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap: _tmp_test_output_var_names — None input & collision
+# ---------------------------------------------------------------------------
+
+
+def test_tmp_test_output_var_names_returns_none_when_output_var_names_is_none() -> None:
+    result = PytorchTask._tmp_test_output_var_names(None, set())
+    assert result is None
+
+
+def test_tmp_test_output_var_names_handles_collision_with_reserved_names() -> None:
+    reserved = {'__storegate_predict_tmp_0'}
+    result = PytorchTask._tmp_test_output_var_names(['pred'], reserved)
+    assert result == ['__storegate_predict_tmp_0_1']
+    assert '__storegate_predict_tmp_0_1' in reserved
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap: _backup_test_output_var_name — collision
+# ---------------------------------------------------------------------------
+
+
+def test_backup_test_output_var_name_handles_collision() -> None:
+    reserved = {'backup_pred'}
+    result = PytorchTask._backup_test_output_var_name('pred', reserved)
+    assert result == 'backup_pred_1'
+    assert 'backup_pred_1' in reserved
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap: _delete_test_outputs — None input
+# ---------------------------------------------------------------------------
+
+
+def test_delete_test_outputs_returns_false_when_none() -> None:
+    task = make_task(output_var_names=['pred'])
+    assert task._delete_test_outputs(None) is False
+    task._storegate.get_var_names.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap: _promote_tmp_test_outputs — rollback deletes promoted vars
+# ---------------------------------------------------------------------------
+
+
+def test_promote_tmp_test_outputs_rollback_deletes_partially_promoted_vars(tmp_path) -> None:
+    sg = StoreGate(output_dir=str(tmp_path), mode='w', data_id='exp')
+    sg.add_data('x', np.arange(8, dtype=np.float32).reshape(4, 2), phase='test')
+    sg.add_data('pred0', np.zeros((4, 1), dtype=np.float32), phase='test')
+    sg.add_data('pred1', np.zeros((4, 1), dtype=np.float32), phase='test')
+
+    tmp0 = '__storegate_predict_tmp_0'
+    tmp1 = '__storegate_predict_tmp_1'
+    sg.add_data(tmp0, np.ones((4, 1), dtype=np.float32), phase='test')
+    sg.add_data(tmp1, np.full((4, 1), 2.0, dtype=np.float32), phase='test')
+    sg.compile()
+
+    task = make_loop_task(
+        input_var_names={'test': 'x'},
+        output_var_names={'test': ['pred0', 'pred1']},
+        storegate=sg,
+    )
+
+    original_rename = sg.rename_data
+    call_count = 0
+
+    def fail_on_second_promote(var_name, output_var_name, phase):
+        nonlocal call_count
+        call_count += 1
+        # Let backup renames and first promote succeed, fail on second promote
+        if call_count == 4:  # 2 backups + 1 promote succeed, 4th fails
+            raise RuntimeError('promote boom')
+        original_rename(var_name, output_var_name, phase)
+
+    with patch.object(sg, 'rename_data', side_effect=fail_on_second_promote):
+        with pytest.raises(RuntimeError, match='promote boom'):
+            task._promote_tmp_test_outputs([tmp0, tmp1], ['pred0', 'pred1'])
+
+    # Originals should be restored
+    np.testing.assert_array_equal(
+        sg.get_data('pred0', 'test'),
+        np.zeros((4, 1), dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        sg.get_data('pred1', 'test'),
+        np.zeros((4, 1), dtype=np.float32),
+    )
+    assert tmp0 not in sg.get_var_names('test')
+    assert tmp1 not in sg.get_var_names('test')
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap: _validate_test_inputs_exist — not dict / empty
+# ---------------------------------------------------------------------------
+
+
+def test_validate_test_inputs_exist_raises_when_not_dict() -> None:
+    task = PytorchTask.__new__(PytorchTask)
+    task._input_var_names = 'x'  # not a dict (pre-compile state)
+    with pytest.raises(ValueError, match="requires input_var_names"):
+        task._validate_test_inputs_exist(set())
+
+
+def test_validate_test_inputs_exist_raises_when_test_phase_is_none() -> None:
+    task = PytorchTask.__new__(PytorchTask)
+    task._input_var_names = {'train': ['x'], 'valid': ['x'], 'test': None}
+    with pytest.raises(ValueError, match="requires input_var_names"):
+        task._validate_test_inputs_exist(set())
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap: step_batch — valid phase without labels raises
+# ---------------------------------------------------------------------------
+
+
+def test_step_batch_valid_without_labels_raises():
+    task = make_step_task()
+    task._true_var_names = compile_var_names(
+        {'train': 'y_train', 'valid': 'y_valid', 'test': None}
+    )
+    # valid phase expects labels; passing non-tuple data triggers the error
+    with pytest.raises(ValueError, match='labels are required'):
+        task.step_batch(torch.tensor([[1.0, 2.0]]), phase='valid')
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap: _phase_expects_labels — true_var_names not a dict
+# ---------------------------------------------------------------------------
+
+
+def test_phase_expects_labels_returns_false_when_true_var_names_not_dict() -> None:
+    task = PytorchTask.__new__(PytorchTask)
+    task._true_var_names = 'y'  # string, not dict (pre-compile state)
+    assert task._phase_expects_labels('test') is False

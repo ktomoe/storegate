@@ -197,6 +197,24 @@ def test_preload_multi_var_values_match_lazy(sg_multi) -> None:
         assert torch.equal(t_l, t_p)
 
 
+def test_lazy_getitem_returns_tuple_when_target_exists(sg) -> None:
+    """Lazy mode (preload=False) returns (data, target) when true_var_names is set."""
+    ds = StoreGateDataset(sg, 'train', input_var_names='x', true_var_names='y', preload=False)
+    item = ds[0]
+    assert isinstance(item, tuple)
+    data, target = item
+    assert isinstance(data, torch.Tensor)
+    assert isinstance(target, torch.Tensor)
+
+
+def test_lazy_getitem_returns_data_only_when_no_target(sg) -> None:
+    """Lazy mode (preload=False) returns data only when true_var_names is None."""
+    ds = StoreGateDataset(sg, 'train', input_var_names='x', true_var_names=None, preload=False)
+    item = ds[0]
+    assert isinstance(item, torch.Tensor)
+    assert item.shape == (4,)
+
+
 @pytest.mark.parametrize('preload', [False, True])
 def test_tensor_updates_do_not_mutate_numpy_storegate_data(
     sg_numpy: StoreGate,

@@ -10,7 +10,7 @@ from storegate.database.database import Database
 
 _STOREGATE_META_KEY = '_storegate_meta'
 _SNAPSHOT_ROOT_GROUP = '.storegate_snapshots'
-_RESTORE_TMP_ROOT_GROUP = '.storegate_restore_tmp'
+_RESTORE_STAGING_ROOT_GROUP = '.storegate_restore_staging'
 
 
 class ZarrDatabase(Database):
@@ -352,8 +352,34 @@ class ZarrDatabase(Database):
             self._delete_child_if_exists(data_snapshots, snapshot_name)
             raise
 
+    @staticmethod
+    def _unique_child_name(parent: Any, base: str) -> str:
+        """Return a group name under *parent* that does not yet exist."""
+        name = base
+        suffix = 0
+        while name in parent.group_keys():
+            suffix += 1
+            name = f'{base}_{suffix}'
+        return name
+
     def restore_data_id(self, data_id: str, snapshot_name: str) -> None:
-        """Replace ``data_id`` in the zarr store with ``snapshot_name``."""
+        """Replace ``data_id`` in the zarr store with ``snapshot_name``.
+
+        Uses a staging-first strategy so that a complete copy of the
+        data always exists at every point in the process:
+
+        1. **Stage** – copy the snapshot into a temporary staging group
+           while the existing ``data_id`` remains untouched.
+        2. **Install** – only after the staging copy is fully written,
+           delete the old ``data_id`` and copy the staging content into
+           the live location.
+
+        If step 1 fails, the original ``data_id`` is still intact and
+        the incomplete staging group is cleaned up.  If step 2 fails,
+        recovery is attempted from the still-complete staging group.
+        If recovery also fails, the staging group is preserved on disk
+        so that data can be salvaged manually.
+        """
         self._require_writable('restore')
 
         if _SNAPSHOT_ROOT_GROUP not in self._db.group_keys():
@@ -368,31 +394,41 @@ class ZarrDatabase(Database):
             raise KeyError(f"snapshot '{snapshot_name}' not found for data_id '{data_id}'.")
 
         snapshot_group = data_snapshots[snapshot_name]
-        restore_tmp_root = self._db.require_group(_RESTORE_TMP_ROOT_GROUP)
-        backup_name = f'{data_id}_{snapshot_name}'
-        suffix = 0
-        while backup_name in restore_tmp_root.group_keys():
-            suffix += 1
-            backup_name = f'{data_id}_{snapshot_name}_{suffix}'
 
-        had_existing = data_id in self._db.group_keys()
+        # Phase 1: Build complete restoration in staging area.
+        # The original data_id is untouched during this phase.
+        staging_root = self._db.require_group(_RESTORE_STAGING_ROOT_GROUP)
+        staging_name = self._unique_child_name(staging_root, data_id)
+
         try:
-            if had_existing:
-                backup_group = restore_tmp_root.require_group(backup_name)
-                self._copy_group_contents(self._db[data_id], backup_group)
+            staged = staging_root.require_group(staging_name)
+            self._copy_group_contents(snapshot_group, staged)
+        except Exception:
+            self._delete_child_if_exists(staging_root, staging_name)
+            raise
 
+        # Phase 2: Replace data_id with the fully-prepared staging copy.
+        # A complete copy now exists in staging, so recovery is always
+        # possible even if the process is interrupted mid-install.
+        installed = False
+        try:
             self._delete_child_if_exists(self._db, data_id)
             restored_group = self._db.require_group(data_id)
-            self._copy_group_contents(snapshot_group, restored_group)
+            self._copy_group_contents(staged, restored_group)
+            installed = True
         except Exception:
-            self._delete_child_if_exists(self._db, data_id)
-
-            if had_existing and backup_name in restore_tmp_root.group_keys():
-                restored_group = self._db.require_group(data_id)
-                self._copy_group_contents(restore_tmp_root[backup_name], restored_group)
+            # Install failed – re-attempt from the intact staging copy.
+            try:
+                self._delete_child_if_exists(self._db, data_id)
+                fallback = self._db.require_group(data_id)
+                self._copy_group_contents(staging_root[staging_name], fallback)
+                installed = True
+            except Exception:
+                pass
             raise
         finally:
-            self._delete_child_if_exists(restore_tmp_root, backup_name)
+            if installed:
+                self._delete_child_if_exists(staging_root, staging_name)
 
     def close(self) -> None:
         self._db.store.close()

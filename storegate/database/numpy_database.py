@@ -11,6 +11,13 @@ from storegate.database.database import Database
 class NumpyDatabase(Database):
     """In-memory database backed by numpy arrays.
 
+    All data, caches, and metadata are held in process memory and are
+    **not persisted** to disk.  Nothing survives beyond the lifetime of
+    the ``NumpyDatabase`` instance — when it is closed (or
+    garbage-collected), all stored data is permanently lost.  To persist
+    data, copy it to the zarr backend via ``StoreGate.copy_to_storage()``
+    before closing.
+
     Warning:
         This class is **not thread-safe**.  Concurrent access from
         multiple threads without external locking may corrupt internal

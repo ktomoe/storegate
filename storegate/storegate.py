@@ -398,7 +398,15 @@ class StoreGate:
 
     @require_data_id
     def set_backend(self, backend: str) -> None:
-        """Set backend mode of hybrid architecture."""
+        """Set backend mode of hybrid architecture.
+
+        Note:
+            The numpy backend is purely in-memory.  Its data and compiled
+            metadata are **not persisted** across sessions.  When the
+            ``StoreGate`` instance is closed or garbage-collected, all
+            numpy-only data is lost.  Use ``copy_to_storage()`` to persist
+            numpy data to the zarr backend before closing.
+        """
         _validate_backend(backend)
         self._db.set_backend(backend)
 
@@ -537,7 +545,13 @@ class StoreGate:
 
     @require_data_id
     def copy_to_memory(self, var_name: str, phase: str, output_var_name: str | None = None) -> None:
-        """Copy data from storage to memory."""
+        """Copy data from storage to memory.
+
+        Note:
+            The copied data resides in the numpy (in-memory) backend and is
+            **not persisted** across sessions.  It will be discarded when the
+            ``StoreGate`` instance is closed.
+        """
         self._copy_between_backends(
             var_name=var_name,
             phase=phase,
@@ -565,6 +579,11 @@ class StoreGate:
         output_var_name = output_var_name or var_name
         data_id = self._require_current_data_id()
 
+        logger.debug(
+            "copy_to_%s: data_id='%s', var='%s' -> '%s', phase='%s'",
+            dst_label, data_id, var_name, output_var_name, phase,
+        )
+
         with self.using_backend(dst_backend):
             if output_var_name in self.get_var_names(phase):
                 raise ValueError(f'{output_var_name} already exists in {dst_label}. Delete first or use a different output_var_name.')
@@ -579,6 +598,8 @@ class StoreGate:
                 if output_var_name in self.get_var_names(phase):
                     self.delete_data(output_var_name, phase)
             raise
+
+        logger.debug("copy_to_%s: done", dst_label)
 
 
     @require_data_id
@@ -598,7 +619,9 @@ class StoreGate:
         """Save the current zarr-backed state of ``data_id`` as ``snapshot_name``."""
         _validate_snapshot_name(snapshot_name)
         data_id = self._require_current_data_id()
+        logger.debug("snapshot: data_id='%s', snapshot_name='%s'", data_id, snapshot_name)
         self._db.snapshot_data_id(data_id, snapshot_name)
+        logger.debug("snapshot: done")
 
     @require_data_id
     def restore(self, snapshot_name: str) -> None:
@@ -611,6 +634,7 @@ class StoreGate:
         """
         _validate_snapshot_name(snapshot_name)
         data_id = self._require_current_data_id()
+        logger.debug("restore: data_id='%s', snapshot_name='%s'", data_id, snapshot_name)
         self._db.restore_data_id(data_id, snapshot_name)
         self._db.clear_data_id(data_id)
         self._db.set_backend('zarr')
@@ -619,6 +643,7 @@ class StoreGate:
             'sizes': {backend: {} for backend in _SUPPORTED_BACKENDS},
         }
         self._load_meta(data_id)
+        logger.debug("restore: done")
 
 
     @require_data_id
@@ -646,6 +671,10 @@ class StoreGate:
 
         data_id = self._require_current_data_id()
         backend = self.get_backend()
+        logger.debug(
+            "compile: data_id='%s', backend='%s', cross_backend=%s",
+            data_id, backend, cross_backend,
+        )
         next_sizes = {
             phase: self._phase_total_events(self._db.get_metadata(data_id, phase), phase)
             for phase in const.PHASES
@@ -657,6 +686,7 @@ class StoreGate:
         self._metadata[data_id]['compiled'][backend] = True
         self._metadata[data_id]['sizes'][backend] = next_sizes
         self._save_meta(data_id)
+        logger.debug("compile: done, sizes=%s", next_sizes)
 
         if show_info:
             self.show_info()
