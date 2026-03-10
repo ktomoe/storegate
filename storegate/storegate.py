@@ -574,8 +574,10 @@ class StoreGate:
         Note:
             Compiled state and phase sizes are automatically restored from the
             zarr store if ``compile()`` was previously called and the store was
-            saved.  Re-calling ``compile()`` is only necessary when new data has
-            been added since the last ``compile()``.
+            saved. Selecting an existing ``data_id`` re-syncs the zarr-backed
+            metadata from disk so long-lived instances see external updates.
+            Re-calling ``compile()`` is only necessary when new data has been
+            added since the last ``compile()``.
         """
         _validate_data_id(data_id)
         previous_data_id = self._data_id
@@ -590,8 +592,7 @@ class StoreGate:
         try:
             self._db.initialize(data_id)
             self._data_id = data_id
-            if not has_metadata:
-                self._load_meta(data_id)
+            self._load_meta(data_id)
         except Exception:
             self._data_id = previous_data_id
             if not has_metadata:
@@ -1028,10 +1029,13 @@ class StoreGate:
         invalidate the restored compiled state so callers are forced to
         recompile before using ``len()``.
         """
+        meta = self._metadata[data_id]
+        meta['compiled']['zarr'] = False
+        meta['sizes']['zarr'] = {}
+
         saved = self._db.load_meta_attrs(data_id)
         if not saved:
             return
-        meta = self._metadata[data_id]
         meta['compiled']['zarr'] = saved.get('compiled', {}).get('zarr', False)
         meta['sizes']['zarr'] = dict(saved.get('sizes', {}).get('zarr', {}))
 

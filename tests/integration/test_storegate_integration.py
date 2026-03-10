@@ -351,6 +351,25 @@ def test_metadata_restored_multi_data_id(tmp_path):
     assert len(sg2['train']) == 3
 
 
+def test_set_data_id_refreshes_existing_metadata_after_external_update(tmp_path):
+    """Re-selecting a known data_id refreshes zarr metadata from disk."""
+    sg1 = StoreGate(output_dir=str(tmp_path), mode='w')
+    sg1.set_data_id('shared')
+    sg1.add_data('x', np.array([[1.0], [2.0]]), phase='train')
+    sg1.compile()
+    assert len(sg1['train']) == 2
+
+    sg2 = StoreGate(output_dir=str(tmp_path), mode='a')
+    sg2.set_data_id('shared')
+    sg2.add_data('x', np.array([[3.0]]), phase='train')
+    sg2.compile()
+    assert len(sg2['train']) == 3
+
+    sg1.set_data_id('other')
+    sg1.set_data_id('shared')
+    assert len(sg1['train']) == 3
+
+
 def test_metadata_invalidated_after_add_data(tmp_path):
     """add_data after compile() persists compiled=False so reopening correctly requires compile()."""
     sg = _make_store(tmp_path)
