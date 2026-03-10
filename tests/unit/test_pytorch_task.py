@@ -624,7 +624,7 @@ def test_predict_skips_when_test_phase_empty() -> None:
     task = make_loop_task(output_var_names=['pred'])
     task._storegate.get_var_names.return_value = []
 
-    with patch('storegate.task.pytorch_task.logger.warn') as warn:
+    with patch('storegate.task.pytorch_task.logger.warning') as warn:
         result = task.predict()
 
     assert result == {'test': {}}
