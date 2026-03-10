@@ -329,7 +329,7 @@ class StoreGate:
             for data_id, phases in self._db.get_pending_var_names().items():
                 for phase, var_names in phases.items():
                     var_list = ', '.join(var_names)
-                    logger.warn(
+                    logger.warning(
                         f"close(): discarding unsaved numpy data."
                         f" data_id='{data_id}', phase='{phase}', vars=[{var_list}]"
                     )
@@ -841,7 +841,7 @@ class StoreGate:
             actual_sizes = None
 
         if actual_sizes != meta['sizes']['zarr']:
-            logger.warn(
+            logger.warning(
                 f"Invalidating stale compiled zarr metadata for data_id='{data_id}'. "
                 'Call compile() again before using len().'
             )

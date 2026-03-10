@@ -20,9 +20,9 @@ class EpochMetric:
         valid: list[str | Callable[..., Any]] = []
         for metric in metrics:
             if isinstance(metric, str) and not hasattr(self, metric):
-                logger.warn(f"Unknown metric '{metric}' will be ignored.")
+                logger.warning(f"Unknown metric '{metric}' will be ignored.")
             elif metric == 'lr' and ml.optimizer is None:
-                logger.warn("Metric 'lr' requires an optimizer; it will be ignored.")
+                logger.warning("Metric 'lr' requires an optimizer; it will be ignored.")
             else:
                 valid.append(metric)
         self.metrics = valid

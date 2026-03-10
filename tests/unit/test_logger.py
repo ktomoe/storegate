@@ -87,8 +87,8 @@ def test_info_emits_message(capture):
     assert any('test info msg' in m for m in capture)
 
 
-def test_warn_emits_message(capture):
-    logger.warn('test warn %s', 'msg')
+def test_warning_emits_message(capture):
+    logger.warning('test warn %s', 'msg')
     assert any('test warn msg' in m for m in capture)
 
 

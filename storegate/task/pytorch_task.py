@@ -348,7 +348,7 @@ class PytorchTask(DLTask):
 
         existing_var_names = set(self._storegate.get_var_names('test'))
         if not existing_var_names:
-            logger.warn("predict() skipped: no variables found in the 'test' phase.")
+            logger.warning("predict() skipped: no variables found in the 'test' phase.")
             return {'test': {}}
         self._validate_test_inputs_exist(existing_var_names)
         tmp_output_var_names = self._tmp_test_output_var_names(

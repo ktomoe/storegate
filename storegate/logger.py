@@ -78,7 +78,7 @@ def info(msg: str, *args: Any) -> None:
     _logger.info(msg, *args)
 
 
-def warn(msg: str, *args: Any) -> None:
+def warning(msg: str, *args: Any) -> None:
     """Show warning [W] message."""
     _logger.warning(msg, *args)
 

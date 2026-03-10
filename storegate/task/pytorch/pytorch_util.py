@@ -28,7 +28,7 @@ def build_module(obj: Any, obj_args: dict[str, Any], modules: Any) -> _Module:
     # instance object
     else:
         if obj_args != {}:
-            logger.warn('instance object is given but args is also provided')
+            logger.warning('instance object is given but args is also provided')
         return copy.deepcopy(obj)
 
 

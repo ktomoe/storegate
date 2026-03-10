@@ -5,7 +5,7 @@ from typing import Any, Literal, cast
 import numpy as np
 import zarr
 
-from storegate import const
+from storegate import const, logger
 from storegate.database.database import Database
 
 _STOREGATE_META_KEY = '_storegate_meta'
@@ -424,7 +424,11 @@ class ZarrDatabase(Database):
                 self._copy_group_contents(staging_root[staging_name], fallback)
                 installed = True
             except Exception:
-                pass
+                logger.error(
+                    f"restore: recovery also failed for data_id='{data_id}'. "
+                    f"Staging data preserved at '{_RESTORE_STAGING_ROOT_GROUP}/{data_id}/{staging_name}' "
+                    "for manual recovery."
+                )
             raise
         finally:
             if installed:
