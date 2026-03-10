@@ -1,5 +1,6 @@
 import contextlib
 import copy
+from collections.abc import Mapping
 from typing import Any, cast
 
 import torch
@@ -19,14 +20,24 @@ from torch.utils.data import DataLoader
 
 class PytorchTask(DLTask):
     """DL task class for the default functions."""
+    type _Kwargs = dict[str, Any]
+    type _PhaseKwargs = dict[str, _Kwargs]
+
     def __init__(self,
                  device: str = 'auto',
                  torch_compile: bool = False,
                  torchinfo: bool = False,
-                 dataset_args: dict[str, Any] | None = None,
-                 dataloader_args: dict[str, Any] | None = None,
+                 dataset_args: Mapping[str, Any] | None = None,
+                 dataloader_args: Mapping[str, Any] | None = None,
                  **kwargs: Any):
-        """Initialize the pytorch base task."""
+        """Initialize the pytorch base task.
+
+        Args:
+            dataset_args: Dataset kwargs applied to all phases, or a per-phase
+                mapping like ``{'train': {...}, 'valid': {...}, 'test': {...}}``.
+            dataloader_args: DataLoader kwargs applied to all phases, or a
+                per-phase mapping like ``{'train': {...}, 'valid': {...}, 'test': {...}}``.
+        """
 
         super().__init__(**kwargs)
 
@@ -35,8 +46,14 @@ class PytorchTask(DLTask):
         self._device: torch.device = torch.device(device)
         self._torch_compile: bool = torch_compile
         self._torchinfo: bool = torchinfo
-        self._dataset_args: dict[str, Any] | None = None if dataset_args is None else dict(dataset_args)
-        self._dataloader_args: dict[str, Any] | None = None if dataloader_args is None else dict(dataloader_args)
+        self._dataset_args: PytorchTask._PhaseKwargs = self._normalize_phase_kwargs(
+            dataset_args,
+            name='dataset_args',
+        )
+        self._dataloader_args: PytorchTask._PhaseKwargs = self._normalize_phase_kwargs(
+            dataloader_args,
+            name='dataloader_args',
+        )
 
         self._pbar_args: dict[str, Any] = const.PBAR_ARGS
 
@@ -45,6 +62,40 @@ class PytorchTask(DLTask):
 
         if self._metrics is None:
             self._metrics = ['loss']
+
+    @staticmethod
+    def _normalize_phase_kwargs(
+        args: Mapping[str, Any] | None,
+        *,
+        name: str,
+    ) -> _PhaseKwargs:
+        if args is None:
+            return {phase: {} for phase in const.PHASES}
+
+        raw = dict(args)
+        phase_keys = set(raw) & set(const.PHASES)
+        non_phase_keys = set(raw) - set(const.PHASES)
+
+        if phase_keys:
+            if non_phase_keys:
+                raise ValueError(
+                    f'{name} must be either a flat kwargs mapping or a per-phase mapping; '
+                    f'mixed keys are not supported: {sorted(raw)}'
+                )
+
+            normalized: PytorchTask._PhaseKwargs = {phase: {} for phase in const.PHASES}
+            for phase, phase_args in raw.items():
+                if phase_args is None:
+                    continue
+                if not isinstance(phase_args, Mapping):
+                    raise TypeError(
+                        f"{name}['{phase}'] must be a mapping of keyword arguments or None, "
+                        f'got {type(phase_args).__name__}.'
+                    )
+                normalized[phase] = dict(phase_args)
+            return normalized
+
+        return {phase: dict(raw) for phase in const.PHASES}
 
     def _phase_var_names(self, attr_name: str, phase: str) -> list[str] | None:
         return self._get_var_names_for_phase(
@@ -239,16 +290,22 @@ class PytorchTask(DLTask):
 
     def get_dataloader(self, phase: str) -> DataLoader:  # type: ignore[type-arg]
         """Return dataloader."""
-        dataset_kwargs = dict(self._dataset_args or {})
+        dataset_kwargs = dict(self._dataset_args[phase])
         dataset = StoreGateDataset(self._storegate,
                                    phase,
                                    input_var_names=self._phase_var_names('_input_var_names', phase),
                                    true_var_names=self._phase_var_names('_true_var_names', phase),
                                    **dataset_kwargs)
 
-        dataloader_args: dict[str, Any] = {'dataset': dataset, **(self._dataloader_args or {})}
+        dataloader_args: dict[str, Any] = {'dataset': dataset, **self._dataloader_args[phase]}
         has_batch_sampler = 'batch_sampler' in dataloader_args
         has_sampler = 'sampler' in dataloader_args
+
+        if phase == 'test' and (has_sampler or has_batch_sampler):
+            raise ValueError(
+                "test phase does not support custom sampler or batch_sampler because "
+                'prediction outputs must preserve StoreGate sample order.'
+            )
 
         if not has_batch_sampler:
             dataloader_args['batch_size'] = self._batch_size

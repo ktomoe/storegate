@@ -127,6 +127,28 @@ task = MyTask(
 task.execute()  # runs fit() then predict(), writes outputs to storegate
 ```
 
+`dataset_args` and `dataloader_args` accept either a flat kwargs mapping
+applied to every phase, or a per-phase mapping:
+
+```python
+task = MyTask(
+    ...,
+    dataset_args={
+        'train': {'preload': False},
+        'test': {'preload': True},
+    },
+    dataloader_args={
+        'train': {'num_workers': 4},
+        'valid': {'num_workers': 4},
+        'test': {'num_workers': 0},
+    },
+)
+```
+
+For the `test` phase, custom `sampler` and `batch_sampler` are not supported.
+StoreGate writes predictions back in dataset order, so test-time ordering must
+remain the original sample order.
+
 When `input_var_names`, `true_var_names`, or `output_var_names` contain multiple
 variables for a phase, `StoreGateDataset` returns them as `list[Tensor]`.
 The default `PytorchTask` execution path passes those lists through as-is:

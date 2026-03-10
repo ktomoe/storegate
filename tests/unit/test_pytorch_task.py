@@ -165,10 +165,69 @@ def test_init_copies_dataset_and_dataloader_args() -> None:
         dataset_args=dataset_args,
         dataloader_args=dataloader_args,
     )
-    assert task._dataset_args == dataset_args
-    assert task._dataloader_args == dataloader_args
-    assert task._dataset_args is not dataset_args
-    assert task._dataloader_args is not dataloader_args
+    expected_dataset_args = {
+        'train': {'preload': False},
+        'valid': {'preload': False},
+        'test': {'preload': False},
+    }
+    expected_dataloader_args = {
+        'train': {'num_workers': 2},
+        'valid': {'num_workers': 2},
+        'test': {'num_workers': 2},
+    }
+    assert task._dataset_args == expected_dataset_args
+    assert task._dataloader_args == expected_dataloader_args
+    assert task._dataset_args['train'] is not dataset_args
+    assert task._dataloader_args['train'] is not dataloader_args
+
+
+def test_init_supports_phase_specific_dataset_and_dataloader_args() -> None:
+    dataset_args = {
+        'train': {'preload': False},
+        'test': {'preload': True},
+    }
+    dataloader_args = {
+        'train': {'num_workers': 2},
+        'test': {'shuffle': True, 'num_workers': 4},
+    }
+    task = PytorchTask(
+        storegate=MagicMock(),
+        dataset_args=dataset_args,
+        dataloader_args=dataloader_args,
+    )
+
+    assert task._dataset_args == {
+        'train': {'preload': False},
+        'valid': {},
+        'test': {'preload': True},
+    }
+    assert task._dataloader_args == {
+        'train': {'num_workers': 2},
+        'valid': {},
+        'test': {'shuffle': True, 'num_workers': 4},
+    }
+    assert task._dataset_args['train'] is not dataset_args['train']
+    assert task._dataloader_args['test'] is not dataloader_args['test']
+
+
+@pytest.mark.parametrize('arg_name', ['dataset_args', 'dataloader_args'])
+def test_init_rejects_mixed_flat_and_phase_specific_kwargs(arg_name: str) -> None:
+    kwargs = {
+        'storegate': MagicMock(),
+        arg_name: {'train': {'num_workers': 2}, 'pin_memory': True},
+    }
+    with pytest.raises(ValueError, match='either a flat kwargs mapping or a per-phase mapping'):
+        PytorchTask(**kwargs)
+
+
+@pytest.mark.parametrize('arg_name', ['dataset_args', 'dataloader_args'])
+def test_init_rejects_non_mapping_phase_specific_kwargs(arg_name: str) -> None:
+    kwargs = {
+        'storegate': MagicMock(),
+        arg_name: {'train': 1},
+    }
+    with pytest.raises(TypeError, match=r"\['train'\] must be a mapping"):
+        PytorchTask(**kwargs)
 
 
 def test_compile_calls_compile_device_then_super_compile() -> None:
@@ -400,6 +459,38 @@ def test_get_dataloader_with_sampler_does_not_inject_shuffle() -> None:
     assert 'shuffle' not in kwargs
 
 
+def test_get_dataloader_uses_phase_specific_kwargs() -> None:
+    task = make_runtime_task(
+        dataset_args={
+            'train': {'preload': False},
+            'test': {'preload': True},
+        },
+        dataloader_args={
+            'train': {'num_workers': 2},
+            'test': {'shuffle': True, 'num_workers': 4},
+        },
+        batch_size=16,
+        input_var_names={'train': 'x_train', 'valid': 'x_valid', 'test': 'x_test'},
+        true_var_names={'train': 'y_train', 'valid': 'y_valid', 'test': None},
+    )
+    fake_dataset = object()
+
+    with patch('storegate.task.pytorch_task.StoreGateDataset', return_value=fake_dataset) as dataset_cls:
+        with patch('storegate.task.pytorch_task.DataLoader', return_value='loader') as dataloader_cls:
+            loader = task.get_dataloader('test')
+
+    assert loader == 'loader'
+    assert dataset_cls.call_args.kwargs['input_var_names'] == ['x_test']
+    assert dataset_cls.call_args.kwargs['true_var_names'] is None
+    assert dataset_cls.call_args.kwargs['preload'] is True
+
+    kwargs = dataloader_cls.call_args.kwargs
+    assert kwargs['dataset'] is fake_dataset
+    assert kwargs['batch_size'] == 16
+    assert kwargs['num_workers'] == 4
+    assert kwargs['shuffle'] is False
+
+
 def test_get_dataloader_with_batch_sampler_does_not_inject_batch_size_or_shuffle() -> None:
     batch_sampler = torch.utils.data.BatchSampler(
         torch.utils.data.SequentialSampler(range(8)),
@@ -423,6 +514,32 @@ def test_get_dataloader_with_batch_sampler_does_not_inject_batch_size_or_shuffle
     assert 'batch_size' not in kwargs
     assert 'shuffle' not in kwargs
     assert 'sampler' not in kwargs
+
+
+@pytest.mark.parametrize(
+    ('dataloader_args', 'message'),
+    [
+        ({'sampler': torch.utils.data.SequentialSampler(range(8))}, 'custom sampler'),
+        (
+            {
+                'batch_sampler': torch.utils.data.BatchSampler(
+                    torch.utils.data.SequentialSampler(range(8)),
+                    batch_size=2,
+                    drop_last=False,
+                ),
+            },
+            'batch_sampler',
+        ),
+    ],
+)
+def test_get_dataloader_rejects_custom_test_ordering_args(
+    dataloader_args: dict[str, Any],
+    message: str,
+) -> None:
+    task = make_runtime_task(dataloader_args=dataloader_args)
+
+    with pytest.raises(ValueError, match=message):
+        task.get_dataloader('test')
 
 
 def test_fit_without_valid_returns_train_history_only() -> None:
