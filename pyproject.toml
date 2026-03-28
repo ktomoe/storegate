@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "storegate"
+version = "1.0.0"
+license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.4.2,<3",
+    "zarr>=3.1.5,<3.2",
+    "tqdm>=4.0",
+]
+
+[project.optional-dependencies]
+torch = [
+    "torch>=2.0",
+    "torchinfo>=1.8",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=6.0",
+    "mypy>=1.10",
+    "ruff>=0.4",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: unit tests",
+    "integration: integration tests",
+]
+
+[tool.coverage.run]
+source = ["storegate"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@abstractmethod",
+]
