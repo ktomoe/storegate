@@ -10,8 +10,9 @@ import zarr
 from zarr.core.group import Group
 from zarr.storage import LocalStore
 
-from storegate.database.database import Database, GetIndex, UpdateIndex
 from storegate import utilities as util
+from storegate.database.database import Database, GetIndex, UpdateIndex
+from storegate.database.staged_add import _is_staged_var_name
 
 _AUTO_CHUNK_BYTES = 16 * 1024 * 1024
 _STOREGATE_SCHEMA_KEY = "_storegate_schema"
@@ -357,6 +358,8 @@ class ZarrDatabase(Database):
             vars_report: dict[str, int] = {}
 
             for var_name in sorted(phase_group.array_keys()):
+                if _is_staged_var_name(var_name):
+                    continue
                 arr = cast(zarr.Array, phase_group[var_name])
                 vars_report[var_name] = int(arr.shape[0])
 

@@ -4,6 +4,7 @@ from typing import Any, Iterator, cast
 import numpy as np
 
 from storegate.database.database import Database, GetIndex, UpdateIndex
+from storegate.database.staged_add import _is_staged_var_name
 
 
 class NumpyDatabase(Database):
@@ -230,6 +231,8 @@ class NumpyDatabase(Database):
             vars_report: dict[str, int] = {}
 
             for var_name in sorted(phase_group.keys()):
+                if _is_staged_var_name(var_name):
+                    continue
                 entry = phase_group[var_name]
                 cache = entry["cache"]
                 if cache is None:

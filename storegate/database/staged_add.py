@@ -7,6 +7,11 @@ from storegate.database.database import Database
 _TEMP_PREFIX = "_db_staged"
 
 
+def _is_staged_var_name(name: str) -> bool:
+    """Return whether *name* is an internal staged_add temporary variable."""
+    return name.startswith(f"{_TEMP_PREFIX}_")
+
+
 class _StagedAddTransaction:
     """Transaction object returned by :meth:`Database.staged_add`."""
 
