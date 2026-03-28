@@ -35,13 +35,13 @@ Optional (for PyTorch features):
 ## Installation
 
 ```bash
-pip install storegate
+pip install -e .
 
 # With PyTorch support
-pip install storegate[torch]
+pip install -e .[torch]
 
 # Development
-pip install storegate[dev]
+pip install -e .[dev]
 ```
 
 ## Quick Start
