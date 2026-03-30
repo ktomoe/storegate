@@ -14,6 +14,54 @@ _PROGRESS_HEADERS = ("Slot", "State", "Job", "Epoch", "Detail")
 _PROGRESS_MIN_WIDTHS = (6, 6, 6, 12, 55)
 
 
+def _build_table(
+    title_text: str,
+    headers: tuple[str, ...],
+    min_widths: tuple[int, ...],
+    rows: list[tuple[str, ...]],
+    widths: list[int] | None = None,
+) -> tuple[str, list[int]]:
+    """Render a Unicode box-drawing table and return (table_str, widths)."""
+    if widths is None:
+        resolved = [
+            max(len(h), mw) for h, mw in zip(headers, min_widths)
+        ]
+    else:
+        resolved = list(widths)
+
+    for row in rows:
+        for i, cell in enumerate(row):
+            resolved[i] = max(resolved[i], len(cell))
+
+    inner_width = sum(w + 3 for w in resolved) - 1
+    if len(title_text) > inner_width:
+        resolved[-1] += len(title_text) - inner_width
+
+    table_width = sum(w + 3 for w in resolved) + 1
+    pad = table_width - 2 - len(title_text)
+    left_pad = pad // 2
+    right_pad = pad - left_pad
+
+    def hline(left: str, mid: str, right: str) -> str:
+        return left + mid.join("─" * (w + 2) for w in resolved) + right
+
+    def data_row(cells: tuple[str, ...]) -> str:
+        parts = [f" {c:<{resolved[i]}} " for i, c in enumerate(cells)]
+        return "│" + "│".join(parts) + "│"
+
+    lines: list[str] = [
+        "┌" + "─" * left_pad + title_text + "─" * right_pad + "┐",
+        hline("├", "┬", "┤"),
+        data_row(headers),
+        hline("├", "┼", "┤"),
+    ]
+    for row in rows:
+        lines.append(data_row(row))
+    lines.append(hline("└", "┴", "┘"))
+
+    return "\n".join(lines), resolved
+
+
 def format_show_info_table(
     *,
     data_id: str,
@@ -22,50 +70,21 @@ def format_show_info_table(
     rows: list[ShowInfoRow],
 ) -> str:
     """Return the show_info() table as a formatted string."""
-    headers = _SHOW_INFO_HEADERS
-
-    widths = [
-        max(len(header), min_width)
-        for header, min_width in zip(headers, _SHOW_INFO_MIN_WIDTHS)
-    ]
-    for row in rows:
-        for i, cell in enumerate(row):
-            widths[i] = max(widths[i], len(cell))
-
-    def hline(left: str, mid: str, right: str, fill: str = "─") -> str:
-        return left + mid.join(fill * (w + 2) for w in widths) + right
-
-    def data_row(cells: tuple[str, ...]) -> str:
-        parts = [f" {c:<{widths[i]}} " for i, c in enumerate(cells)]
-        return "│" + "│".join(parts) + "│"
-
     status = "Compiled" if all_compiled else "Not Compiled"
-
     backend_part = f"  backend: {backend_label}" if backend_label else ""
     title = f" data_id: {data_id}{backend_part}  [{status}] "
-    inner_width = sum(w + 3 for w in widths) - 1
-    if len(title) > inner_width:
-        widths[-1] += len(title) - inner_width
 
-    table_width = sum(w + 3 for w in widths) + 1
-    pad = table_width - 2 - len(title)
-    left_pad = pad // 2
-    right_pad = pad - left_pad
-
-    lines: list[str] = []
-    lines.append("┌" + "─" * left_pad + title + "─" * right_pad + "┐")
-    lines.append(hline("├", "┬", "┤"))
-    lines.append(data_row(headers))
-    lines.append(hline("├", "┼", "┤"))
-
+    display_rows: list[tuple[str, ...]] = []
     prev_phase = ""
     for row in rows:
         display_phase = row[0] if row[0] != prev_phase else ""
         prev_phase = row[0]
-        lines.append(data_row((display_phase,) + row[1:]))
+        display_rows.append((display_phase,) + row[1:])
 
-    lines.append(hline("└", "┴", "┘"))
-    return "\n".join(lines)
+    table, _ = _build_table(
+        title, _SHOW_INFO_HEADERS, _SHOW_INFO_MIN_WIDTHS, display_rows,
+    )
+    return table
 
 
 def format_progress_table(
@@ -75,48 +94,9 @@ def format_progress_table(
     widths: list[int] | None = None,
 ) -> tuple[str, list[int]]:
     """Return the search progress table and the resolved column widths."""
-    headers = _PROGRESS_HEADERS
-
-    if widths is None:
-        resolved_widths = [
-            max(len(header), min_width)
-            for header, min_width in zip(headers, _PROGRESS_MIN_WIDTHS)
-        ]
-    else:
-        resolved_widths = list(widths)
-
-    for row in rows:
-        for i, cell in enumerate(row):
-            resolved_widths[i] = max(resolved_widths[i], len(cell))
-
-    def hline(left: str, mid: str, right: str, fill: str = "─") -> str:
-        return left + mid.join(fill * (w + 2) for w in resolved_widths) + right
-
-    def data_row(cells: tuple[str, ...]) -> str:
-        parts = [f" {c:<{resolved_widths[i]}} " for i, c in enumerate(cells)]
-        return "│" + "│".join(parts) + "│"
-
-    title_text = f" {title} "
-    inner_width = sum(w + 3 for w in resolved_widths) - 1
-    if len(title_text) > inner_width:
-        resolved_widths[-1] += len(title_text) - inner_width
-
-    table_width = sum(w + 3 for w in resolved_widths) + 1
-    pad = table_width - 2 - len(title_text)
-    left_pad = pad // 2
-    right_pad = pad - left_pad
-
-    lines: list[str] = []
-    lines.append("┌" + "─" * left_pad + title_text + "─" * right_pad + "┐")
-    lines.append(hline("├", "┬", "┤"))
-    lines.append(data_row(headers))
-    lines.append(hline("├", "┼", "┤"))
-
-    for row in rows:
-        lines.append(data_row(row))
-
-    lines.append(hline("└", "┴", "┘"))
-    return "\n".join(lines), resolved_widths
+    return _build_table(
+        f" {title} ", _PROGRESS_HEADERS, _PROGRESS_MIN_WIDTHS, rows, widths,
+    )
 
 
 # ---------------------------------------------------------------------------

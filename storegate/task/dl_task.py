@@ -127,6 +127,7 @@ class DLTask(Task):
         if self._storegate is None:
             raise RuntimeError("storegate is not set. Assign a StoreGate instance before calling compile().")
 
+        self._storegate.initialize()
         self._bind_data_id()
         self._dl.clear()
         self._storegate.compile()

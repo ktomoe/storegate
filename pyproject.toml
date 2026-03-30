@@ -10,11 +10,13 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=2.4.2,<3",
-    "zarr>=3.1.5,<3.2",
     "tqdm>=4.0",
 ]
 
 [project.optional-dependencies]
+zarr = [
+    "zarr>=3.1.5,<3.2",
+]
 torch = [
     "torch>=2.0",
     "torchinfo>=1.8",

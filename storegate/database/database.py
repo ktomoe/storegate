@@ -2,9 +2,9 @@ from abc import ABCMeta, abstractmethod
 from typing import TYPE_CHECKING, Any, Iterator, Self, TypeAlias
 
 import numpy as np
-from zarr.core.dtype import parse_dtype
-
 from storegate import utilities as util
+
+_PERSISTABLE_DTYPE_KINDS = frozenset({"b", "i", "u", "f", "c"})
 
 if TYPE_CHECKING:
     from storegate.database.staged_add import _StagedAddTransaction
@@ -511,20 +511,11 @@ class Database(metaclass=ABCMeta):
             raise TypeError("Structured dtype is not allowed")
         if data.dtype.subdtype is not None:  # pragma: no cover
             raise TypeError("Subarray dtype is not allowed")
-        if data.dtype.kind in {"U", "S"}:
+        if data.dtype.kind not in _PERSISTABLE_DTYPE_KINDS:
             raise ValueError(
                 f'dtype "{data.dtype.name}" is not persistable under the storegate contract. '
-                "Text and bytes dtypes are rejected because their Zarr V3 "
-                "representations are unstable."
+                "Only bool, integer, float, and complex dtypes are allowed."
             )
-
-        try:
-            parse_dtype(data.dtype, zarr_format=3)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f'dtype "{data.dtype.name}" is not persistable under the storegate contract. '
-                "Cast the array to a zarr-compatible dtype before adding it."
-            ) from exc
 
     def _validate_add_data_new(
         self, data_id: str, phase: str, var_name: str, data: np.ndarray
